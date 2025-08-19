@@ -549,7 +549,7 @@ if __name__ == "__main__":
     print("🤖 Starting Persian Media Bot...")
     
     # Check if token is set
-    if BOT_TOKEN == "8417638218:AAGfO3ubY0ruAVsoF9-stdUM9U7nLDvTXg4":
+    if BOT_TOKEN == "YOUR_ACTUAL_BOT_TOKEN_HERE":
         print("❌ ERROR: Please replace BOT_TOKEN with your actual bot token from @BotFather")
         print("❌ ERROR: Please replace ADMINS with your Telegram user ID")
     else:
