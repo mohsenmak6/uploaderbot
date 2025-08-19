@@ -4,20 +4,21 @@
 import os
 import logging
 import asyncio
-from typing import List, Dict, Optional, Union, Any, Tuple
-from dataclasses import dataclass, field
+import socket
+from typing import List, Optional, Union, Any, Tuple
 
-from aiogram import Bot, Dispatcher, F, Router, html
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardRemove, ContentType
 )
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 import aiosqlite
 
 # Configure logging
@@ -34,9 +35,13 @@ DB_PATH = "media_bot.db"
 PAGE_SIZE = 10
 
 # Initialize bot and dispatcher
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+try:
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+except Exception as e:
+    logger.error(f"Failed to initialize bot: {e}")
+    exit(1)
 
 # States
 class UploadStates(StatesGroup):
@@ -47,193 +52,172 @@ class UploadStates(StatesGroup):
     waiting_for_episode_metadata = State()
     waiting_for_alternative_names = State()
 
-class EditStates(StatesGroup):
-    waiting_for_edit_choice = State()
-    waiting_for_edit_value = State()
-
 # Database initialization
 async def init_database():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS movies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                year INTEGER,
-                description TEXT,
-                tags TEXT,
-                file_id TEXT NOT NULL,
-                poster_file_id TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS series (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                tags TEXT,
-                poster_file_id TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS seasons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                series_id INTEGER NOT NULL,
-                season_number INTEGER NOT NULL,
-                FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE
-            )
-        ''')
-        
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                season_id INTEGER NOT NULL,
-                episode_number INTEGER NOT NULL,
-                title TEXT,
-                file_id TEXT NOT NULL,
-                FOREIGN KEY (season_id) REFERENCES seasons (id) ON DELETE CASCADE
-            )
-        ''')
-        
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS alternative_names (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content_type TEXT NOT NULL,
-                content_id INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )
-        ''')
-        
-        await db.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Enable foreign keys
+            await db.execute("PRAGMA foreign_keys = ON")
+            
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS movies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    year INTEGER,
+                    description TEXT,
+                    tags TEXT,
+                    file_id TEXT NOT NULL,
+                    poster_file_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS series (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    tags TEXT,
+                    poster_file_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS seasons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    series_id INTEGER NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS episodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    season_id INTEGER NOT NULL,
+                    episode_number INTEGER NOT NULL,
+                    title TEXT,
+                    file_id TEXT NOT NULL,
+                    FOREIGN KEY (season_id) REFERENCES seasons (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS alternative_names (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_type TEXT NOT NULL,
+                    content_id INTEGER NOT NULL,
+                    name TEXT NOT NULL
+                )
+            ''')
+            
+            await db.commit()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
 
 # Database operations
 class Database:
     @staticmethod
     async def add_movie(title: str, year: int, description: str, tags: str, file_id: str, poster_file_id: str = None):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO movies (title, year, description, tags, file_id, poster_file_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (title, year, description, tags, file_id, poster_file_id)
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "INSERT INTO movies (title, year, description, tags, file_id, poster_file_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (title, year, description, tags, file_id, poster_file_id)
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding movie: {e}")
+            return False
 
     @staticmethod
     async def add_series(title: str, description: str, tags: str, poster_file_id: str = None) -> int:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "INSERT INTO series (title, description, tags, poster_file_id) VALUES (?, ?, ?, ?)",
-                (title, description, tags, poster_file_id)
-            )
-            await db.commit()
-            return cursor.lastrowid
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute(
+                    "INSERT INTO series (title, description, tags, poster_file_id) VALUES (?, ?, ?, ?)",
+                    (title, description, tags, poster_file_id)
+                )
+                await db.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Error adding series: {e}")
+            return -1
 
     @staticmethod
     async def add_season(series_id: int, season_number: int) -> int:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "INSERT INTO seasons (series_id, season_number) VALUES (?, ?)",
-                (series_id, season_number)
-            )
-            await db.commit()
-            return cursor.lastrowid
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute(
+                    "INSERT INTO seasons (series_id, season_number) VALUES (?, ?)",
+                    (series_id, season_number)
+                )
+                await db.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Error adding season: {e}")
+            return -1
 
     @staticmethod
     async def add_episode(season_id: int, episode_number: int, title: str, file_id: str):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO episodes (season_id, episode_number, title, file_id) VALUES (?, ?, ?, ?)",
-                (season_id, episode_number, title, file_id)
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "INSERT INTO episodes (season_id, episode_number, title, file_id) VALUES (?, ?, ?, ?)",
+                    (season_id, episode_number, title, file_id)
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding episode: {e}")
+            return False
 
     @staticmethod
     async def add_alternative_name(content_type: str, content_id: int, name: str):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO alternative_names (content_type, content_id, name) VALUES (?, ?, ?)",
-                (content_type, content_id, name)
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "INSERT INTO alternative_names (content_type, content_id, name) VALUES (?, ?, ?)",
+                    (content_type, content_id, name)
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding alternative name: {e}")
+            return False
 
     @staticmethod
     async def search_content(query: str) -> List[Tuple]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            # Search movies
-            movie_cursor = await db.execute(
-                "SELECT 'movie' as type, id, title, year, description FROM movies WHERE title LIKE ? OR description LIKE ? OR tags LIKE ?",
-                (f"%{query}%", f"%{query}%", f"%{query}%")
-            )
-            movies = await movie_cursor.fetchall()
-            
-            # Search series
-            series_cursor = await db.execute(
-                "SELECT 'series' as type, id, title, NULL as year, description FROM series WHERE title LIKE ? OR description LIKE ? OR tags LIKE ?",
-                (f"%{query}%", f"%{query}%", f"%{query}%")
-            )
-            series = await series_cursor.fetchall()
-            
-            # Search alternative names
-            alt_cursor = await db.execute(
-                '''SELECT 'movie' as type, m.id, m.title, m.year, m.description 
-                   FROM movies m 
-                   JOIN alternative_names a ON m.id = a.content_id AND a.content_type = 'movie'
-                   WHERE a.name LIKE ?
-                   UNION
-                   SELECT 'series' as type, s.id, s.title, NULL as year, s.description 
-                   FROM series s 
-                   JOIN alternative_names a ON s.id = a.content_id AND a.content_type = 'series'
-                   WHERE a.name LIKE ?''',
-                (f"%{query}%", f"%{query}%")
-            )
-            alt_results = await alt_cursor.fetchall()
-            
-            return movies + series + alt_results
-
-    @staticmethod
-    async def get_movies(page: int = 0) -> List[Tuple]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "SELECT * FROM movies ORDER BY title LIMIT ? OFFSET ?",
-                (PAGE_SIZE, page * PAGE_SIZE)
-            )
-            return await cursor.fetchall()
-
-    @staticmethod
-    async def get_series(page: int = 0) -> List[Tuple]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "SELECT * FROM series ORDER BY title LIMIT ? OFFSET ?",
-                (PAGE_SIZE, page * PAGE_SIZE)
-            )
-            return await cursor.fetchall()
-
-    @staticmethod
-    async def get_seasons(series_id: int) -> List[Tuple]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "SELECT * FROM seasons WHERE series_id = ? ORDER BY season_number",
-                (series_id,)
-            )
-            return await cursor.fetchall()
-
-    @staticmethod
-    async def get_episodes(season_id: int) -> List[Tuple]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "SELECT * FROM episodes WHERE season_id = ? ORDER BY episode_number",
-                (season_id,)
-            )
-            return await cursor.fetchall()
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Search movies
+                movie_cursor = await db.execute(
+                    "SELECT 'movie' as type, id, title, year, description FROM movies WHERE title LIKE ? OR description LIKE ? OR tags LIKE ?",
+                    (f"%{query}%", f"%{query}%", f"%{query}%")
+                )
+                movies = await movie_cursor.fetchall()
+                
+                # Search series
+                series_cursor = await db.execute(
+                    "SELECT 'series' as type, id, title, NULL as year, description FROM series WHERE title LIKE ? OR description LIKE ? OR tags LIKE ?",
+                    (f"%{query}%", f"%{query}%", f"%{query}%")
+                )
+                series = await series_cursor.fetchall()
+                
+                return movies + series
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+            return []
 
 # Keyboard helpers
 def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton(text="🎬 جستجوی فیلم", callback_data="search_movies"),
-         InlineKeyboardButton(text="📺 جستجوی سریال", callback_data="search_series")],
-        [InlineKeyboardButton(text="🔍 جستجو", callback_data="global_search")]
+        [InlineKeyboardButton(text="🎬 فیلم‌ها", callback_data="show_movies"),
+         InlineKeyboardButton(text="📺 سریال‌ها", callback_data="show_series")],
+        [InlineKeyboardButton(text="🔍 جستجو", callback_data="search")]
     ]
     if is_admin:
         keyboard.append([InlineKeyboardButton(text="⚙️ پنل ادمین", callback_data="admin_panel")])
@@ -241,21 +225,12 @@ def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton(text="📊 آمار", callback_data="admin_stats"),
-         InlineKeyboardButton(text="✏️ ویرایش محتوا", callback_data="admin_edit")],
-        [InlineKeyboardButton(text="🗑️ حذف محتوا", callback_data="admin_delete"),
-         InlineKeyboardButton(text="📤 مدیریت آپلودها", callback_data="admin_uploads")],
+        [InlineKeyboardButton(text="📊 آمار", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="✏️ ویرایش محتوا", callback_data="admin_edit")],
+        [InlineKeyboardButton(text="🗑️ حذف محتوا", callback_data="admin_delete")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def get_pagination_keyboard(current_page: int, total_pages: int, action_prefix: str) -> Optional[InlineKeyboardMarkup]:
-    keyboard = []
-    if current_page > 0:
-        keyboard.append(InlineKeyboardButton(text="⏪ قبلی", callback_data=f"{action_prefix}_page_{current_page - 1}"))
-    if current_page < total_pages - 1:
-        keyboard.append(InlineKeyboardButton(text="⏩ بعدی", callback_data=f"{action_prefix}_page_{current_page + 1}"))
-    return InlineKeyboardMarkup(inline_keyboard=[keyboard]) if keyboard else None
 
 # Handlers
 @dp.message(CommandStart())
@@ -277,12 +252,13 @@ async def cmd_help(message: Message):
     help_text = """
     📖 راهنمای ربات:
 
-    🔍 جستجو: برای پیدا کردن فیلم و سریال
-    🎬 فیلم‌ها: مشاهده لیست فیلم‌ها
-    📺 سریال‌ها: مشاهده لیست سریال‌ها
+    /start - شروع ربات
+    /help - راهنما
+    /search - جستجوی محتوا
+    /admin - پنل مدیریت (فقط ادمین)
 
     👨‍💼 ادمین‌ها می‌توانند:
-    • آپلود محتوا
+    • آپلود محتوا با ارسال ویدیو
     • ویرایش اطلاعات
     • مدیریت محتوا
     """
@@ -295,6 +271,44 @@ async def cmd_admin(message: Message):
         return
     await message.answer("⚙️ پنل مدیریت ادمین", reply_markup=get_admin_keyboard())
 
+# Callback handlers
+@dp.callback_query(F.data == "main_menu")
+async def main_menu_callback(callback: CallbackQuery):
+    is_admin = callback.from_user.id in ADMINS
+    await callback.message.edit_text(
+        "🤖 به ربات مدیا خوش آمدید!",
+        reply_markup=get_main_keyboard(is_admin)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel_callback(callback: CallbackQuery):
+    if callback.from_user.id not in ADMINS:
+        await callback.answer("❌ دسترسی denied")
+        return
+    
+    await callback.message.edit_text(
+        "⚙️ پنل مدیریت ادمین",
+        reply_markup=get_admin_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "search")
+async def search_callback(callback: CallbackQuery):
+    await callback.message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
+    await callback.answer()
+
+@dp.callback_query(F.data == "show_movies")
+async def show_movies_callback(callback: CallbackQuery):
+    await callback.message.answer("📋 لیست فیلم‌ها به زودی اضافه خواهد شد...")
+    await callback.answer()
+
+@dp.callback_query(F.data == "show_series")
+async def show_series_callback(callback: CallbackQuery):
+    await callback.message.answer("📋 لیست سریال‌ها به زودی اضافه خواهد شد...")
+    await callback.answer()
+
+# Media upload handler
 @dp.message(F.content_type.in_({ContentType.VIDEO, ContentType.DOCUMENT}))
 async def handle_media_upload(message: Message, state: FSMContext):
     if message.from_user.id not in ADMINS:
@@ -302,11 +316,16 @@ async def handle_media_upload(message: Message, state: FSMContext):
         return
 
     # Get file_id from video or document
+    file_id = None
     if message.video:
         file_id = message.video.file_id
-    elif message.document and message.document.mime_type and message.document.mime_type.startswith('video/'):
-        file_id = message.document.file_id
-    else:
+    elif message.document:
+        # Check if it's a video file
+        mime_type = getattr(message.document, 'mime_type', '')
+        if mime_type and mime_type.startswith('video/'):
+            file_id = message.document.file_id
+    
+    if not file_id:
         await message.answer("❌ لطفا یک فایل ویدیویی ارسال کنید.")
         return
 
@@ -323,6 +342,7 @@ async def handle_media_upload(message: Message, state: FSMContext):
     )
     await state.set_state(UploadStates.waiting_for_type)
 
+# Upload type callbacks
 @dp.callback_query(F.data == "upload_movie")
 async def upload_movie_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -332,6 +352,7 @@ async def upload_movie_callback(callback: CallbackQuery, state: FSMContext):
         "اینترلستلر | 2014 | فیلمی درباره سفر در فضا | علمی تخیلی,فضا,کریستوفر نولان"
     )
     await state.set_state(UploadStates.waiting_for_movie_metadata)
+    await callback.answer()
 
 @dp.callback_query(F.data == "upload_series")
 async def upload_series_callback(callback: CallbackQuery, state: FSMContext):
@@ -342,7 +363,9 @@ async def upload_series_callback(callback: CallbackQuery, state: FSMContext):
         "بریکینگ بد | سریال درباره یک معلم شیمی که متافی می‌سازد | درام,جنایی,متافی"
     )
     await state.set_state(UploadStates.waiting_for_series_metadata)
+    await callback.answer()
 
+# Movie metadata handler
 @dp.message(UploadStates.waiting_for_movie_metadata)
 async def process_movie_metadata(message: Message, state: FSMContext):
     try:
@@ -357,8 +380,11 @@ async def process_movie_metadata(message: Message, state: FSMContext):
         description = parts[2].strip()
         tags = parts[3].strip()
         
-        await Database.add_movie(title, year, description, tags, data['file_id'])
-        await message.answer("✅ فیلم با موفقیت اضافه شد!")
+        success = await Database.add_movie(title, year, description, tags, data['file_id'])
+        if success:
+            await message.answer("✅ فیلم با موفقیت اضافه شد!")
+        else:
+            await message.answer("❌ خطا در اضافه کردن فیلم.")
         
     except ValueError as e:
         await message.answer(f"❌ خطا در فرمت داده‌ها: {e}")
@@ -367,6 +393,7 @@ async def process_movie_metadata(message: Message, state: FSMContext):
     
     await state.clear()
 
+# Series metadata handler
 @dp.message(UploadStates.waiting_for_series_metadata)
 async def process_series_metadata(message: Message, state: FSMContext):
     try:
@@ -381,18 +408,21 @@ async def process_series_metadata(message: Message, state: FSMContext):
         tags = parts[2].strip()
         
         series_id = await Database.add_series(title, description, tags)
+        if series_id == -1:
+            await message.answer("❌ خطا در اضافه کردن سریال.")
+            await state.clear()
+            return
+            
         await state.update_data(series_id=series_id)
         
-        await message.answer(
-            "✅ سریال اضافه شد! حالا شماره فصل را وارد کنید:",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await message.answer("✅ سریال اضافه شد! حالا شماره فصل را وارد کنید:")
         await state.set_state(UploadStates.waiting_for_season_metadata)
         
     except Exception as e:
         await message.answer(f"❌ خطا در پردازش اطلاعات: {e}")
         await state.clear()
 
+# Season metadata handler
 @dp.message(UploadStates.waiting_for_season_metadata)
 async def process_season_metadata(message: Message, state: FSMContext):
     try:
@@ -400,6 +430,11 @@ async def process_season_metadata(message: Message, state: FSMContext):
         season_number = int(message.text.strip())
         
         season_id = await Database.add_season(data['series_id'], season_number)
+        if season_id == -1:
+            await message.answer("❌ خطا در اضافه کردن فصل.")
+            await state.clear()
+            return
+            
         await state.update_data(season_id=season_id)
         
         await message.answer(
@@ -416,6 +451,7 @@ async def process_season_metadata(message: Message, state: FSMContext):
         await message.answer(f"❌ خطا: {e}")
         await state.clear()
 
+# Episode metadata handler
 @dp.message(UploadStates.waiting_for_episode_metadata)
 async def process_episode_metadata(message: Message, state: FSMContext):
     try:
@@ -424,18 +460,22 @@ async def process_episode_metadata(message: Message, state: FSMContext):
         episode_number = int(parts[0].strip())
         title = parts[1].strip() if len(parts) > 1 else f"قسمت {episode_number}"
         
-        await Database.add_episode(data['season_id'], episode_number, title, data['file_id'])
-        await message.answer("✅ اپیزود با موفقیت اضافه شد!")
+        success = await Database.add_episode(data['season_id'], episode_number, title, data['file_id'])
+        if success:
+            await message.answer("✅ اپیزود با موفقیت اضافه شد!")
+        else:
+            await message.answer("❌ خطا در اضافه کردن اپیزود.")
+            await state.clear()
+            return
         
-        await message.answer(
-            "📝 آیا نام جایگزین برای این سریال دارید؟ (اگر ندارید 'خیر' ارسال کنید):"
-        )
+        await message.answer("📝 آیا نام جایگزین برای این سریال دارید؟ (اگر ندارید 'خیر' ارسال کنید):")
         await state.set_state(UploadStates.waiting_for_alternative_names)
         
     except Exception as e:
         await message.answer(f"❌ خطا: {e}")
         await state.clear()
 
+# Alternative names handler
 @dp.message(UploadStates.waiting_for_alternative_names)
 async def process_alternative_names(message: Message, state: FSMContext):
     if message.text.lower() == 'خیر':
@@ -445,17 +485,22 @@ async def process_alternative_names(message: Message, state: FSMContext):
     
     try:
         data = await state.get_data()
-        await Database.add_alternative_name('series', data['series_id'], message.text)
-        await message.answer("✅ نام جایگزین اضافه شد! نام دیگر وارد کنید یا 'خیر' بفرستید.")
-        
+        success = await Database.add_alternative_name('series', data['series_id'], message.text)
+        if success:
+            await message.answer("✅ نام جایگزین اضافه شد! نام دیگر وارد کنید یا 'خیر' بفرستید.")
+        else:
+            await message.answer("❌ خطا در اضافه کردن نام جایگزین.")
+            await state.clear()
     except Exception as e:
         await message.answer(f"❌ خطا: {e}")
         await state.clear()
 
+# Search command
 @dp.message(Command("search"))
 async def cmd_search(message: Message):
     await message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
 
+# Text message handler for search
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_search(message: Message):
     if len(message.text) < 2:
@@ -478,26 +523,6 @@ async def handle_search(message: Message):
         await message.answer(response)
     except Exception as e:
         await message.answer("❌ خطایی در جستجو رخ داد.")
-        logger.error(f"Search error: {e}")
-
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel_callback(callback: CallbackQuery):
-    if callback.from_user.id not in ADMINS:
-        await callback.answer("❌ دسترسی denied")
-        return
-    
-    await callback.message.edit_text(
-        "⚙️ پنل مدیریت ادمین",
-        reply_markup=get_admin_keyboard()
-    )
-
-@dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback: CallbackQuery):
-    is_admin = callback.from_user.id in ADMINS
-    await callback.message.edit_text(
-        "🤖 به ربات مدیا خوش آمدید!",
-        reply_markup=get_main_keyboard(is_admin)
-    )
 
 # Error handler
 @dp.errors()
@@ -509,17 +534,22 @@ async def main():
     # Initialize database
     await init_database()
     
-    # Start polling
-    await dp.start_polling(bot)
+    print("✅ Database initialized")
+    print("🚀 Starting bot...")
+    
+    try:
+        # Start polling
+        await dp.start_polling(bot)
+    except TelegramNetworkError as e:
+        print(f"❌ Network error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
 
 if __name__ == "__main__":
     print("🤖 Starting Persian Media Bot...")
-    print("📝 Initialize database...")
-    asyncio.run(init_database())
-    print("🚀 Bot is running...")
     
     # Check if token is set
-    if BOT_TOKEN == "YOUR_ACTUAL_BOT_TOKEN_HERE":
+    if BOT_TOKEN == "8417638218:AAGfO3ubY0ruAVsoF9-stdUM9U7nLDvTXg4":
         print("❌ ERROR: Please replace BOT_TOKEN with your actual bot token from @BotFather")
         print("❌ ERROR: Please replace ADMINS with your Telegram user ID")
     else:
