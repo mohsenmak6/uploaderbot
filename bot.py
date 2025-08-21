@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import asyncio
+import uuid
 from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
@@ -29,6 +30,7 @@ ADMINS = [123661460]
 DB_PATH = "media_bot.db"
 BOT_USERNAME = "bdgfilm_bot"
 REQUIRED_CHANNELS = ["@booodgeh"]
+BASE_SHARE_URL = f"https://t.me/{BOT_USERNAME}?start="
 
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
@@ -61,11 +63,24 @@ def init_db():
                 year INTEGER,
                 description TEXT,
                 tags TEXT,
-                file_id TEXT NOT NULL,
                 alternative_names TEXT,
                 poster_file_id TEXT,
-                quality TEXT DEFAULT 'HD',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                share_uuid TEXT UNIQUE
+            )
+        ''')
+        
+        # Movie files table (for multiple qualities)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS movie_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                movie_id INTEGER NOT NULL,
+                file_id TEXT NOT NULL,
+                quality TEXT NOT NULL,
+                file_size INTEGER,
+                duration INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (movie_id) REFERENCES movies (id) ON DELETE CASCADE
             )
         ''')
         
@@ -78,7 +93,8 @@ def init_db():
                 tags TEXT,
                 alternative_names TEXT,
                 poster_file_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                share_uuid TEXT UNIQUE
             )
         ''')
         
@@ -90,6 +106,7 @@ def init_db():
                 season_number INTEGER NOT NULL,
                 title TEXT,
                 description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE
             )
         ''')
@@ -101,10 +118,24 @@ def init_db():
                 season_id INTEGER NOT NULL,
                 episode_number INTEGER NOT NULL,
                 title TEXT,
-                file_id TEXT NOT NULL,
                 alternative_names TEXT,
-                quality TEXT DEFAULT 'HD',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                share_uuid TEXT UNIQUE,
                 FOREIGN KEY (season_id) REFERENCES seasons (id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Episode files table (for multiple qualities)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS episode_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id INTEGER NOT NULL,
+                file_id TEXT NOT NULL,
+                quality TEXT NOT NULL,
+                file_size INTEGER,
+                duration INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (episode_id) REFERENCES episodes (id) ON DELETE CASCADE
             )
         ''')
         
@@ -120,6 +151,50 @@ def init_db():
             )
         ''')
         
+        # Genres table for better categorization
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS genres (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Movie genres relationship table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS movie_genres (
+                movie_id INTEGER,
+                genre_id INTEGER,
+                PRIMARY KEY (movie_id, genre_id),
+                FOREIGN KEY (movie_id) REFERENCES movies (id) ON DELETE CASCADE,
+                FOREIGN KEY (genre_id) REFERENCES genres (id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Series genres relationship table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS series_genres (
+                series_id INTEGER,
+                genre_id INTEGER,
+                PRIMARY KEY (series_id, genre_id),
+                FOREIGN KEY (series_id) REFERENCES series (id) ON DELETE CASCADE,
+                FOREIGN KEY (genre_id) REFERENCES genres (id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Insert default genres
+        default_genres = [
+            "اکشن", "ماجراجویی", "کمدی", "درام", "فانتزی", 
+            "تاریخی", "ترسناک", "علمی تخیلی", "رمانتیک", "هیجان انگیز",
+            "جنایی", "انیمیشن", "مستند", "بیوگرافی", "جنگی"
+        ]
+        
+        for genre in default_genres:
+            cursor.execute(
+                "INSERT OR IGNORE INTO genres (name) VALUES (?)",
+                (genre,)
+            )
+        
         conn.commit()
 
 # Initialize database
@@ -131,11 +206,16 @@ class AdminStates(StatesGroup):
     waiting_for_movie_year = State()
     waiting_for_movie_description = State()
     waiting_for_movie_tags = State()
+    waiting_for_movie_genres = State()
     waiting_for_alternative_names = State()
+    waiting_for_movie_poster = State()
+    waiting_for_movie_files = State()
     
     waiting_for_series_title = State()
     waiting_for_series_description = State()
     waiting_for_series_tags = State()
+    waiting_for_series_genres = State()
+    waiting_for_series_poster = State()
     
     waiting_for_season_number = State()
     waiting_for_season_title = State()
@@ -143,10 +223,14 @@ class AdminStates(StatesGroup):
     
     waiting_for_episode_title = State()
     waiting_for_episode_number = State()
+    waiting_for_episode_files = State()
     
     waiting_for_edit_item = State()
     waiting_for_edit_field = State()
     waiting_for_edit_value = State()
+    
+    waiting_for_bulk_message = State()
+    waiting_for_quality_selection = State()
 
 # Utility functions
 async def check_channel_membership(user_id: int) -> bool:
@@ -192,6 +276,7 @@ def create_admin_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="➕ افزودن فیلم"), KeyboardButton(text="➕ افزودن سریال")],
             [KeyboardButton(text="📊 آمار"), KeyboardButton(text="✏️ ویرایش محتوا")],
+            [KeyboardButton(text="📤 ارسال همگانی"), KeyboardButton(text="🔗 لینک اشتراک")],
             [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
         ],
         resize_keyboard=True
@@ -206,6 +291,84 @@ def create_back_keyboard() -> ReplyKeyboardMarkup:
     )
     return keyboard
 
+def create_sorting_keyboard(content_type: str) -> InlineKeyboardMarkup:
+    """Create sorting options keyboard"""
+    keyboard = InlineKeyboardBuilder()
+    
+    if content_type == "movie":
+        keyboard.add(
+            InlineKeyboardButton(text="🆕 جدیدترین", callback_data="sort_movie_newest"),
+            InlineKeyboardButton(text="🕰 قدیمی ترین", callback_data="sort_movie_oldest"),
+            InlineKeyboardButton(text="🔤 الفبا (صعودی)", callback_data="sort_movie_asc"),
+            InlineKeyboardButton(text="🔤 الفبا (نزولی)", callback_data="sort_movie_desc"),
+            InlineKeyboardButton(text="🎭 بر اساس ژانر", callback_data="sort_movie_genre")
+        )
+    else:  # series
+        keyboard.add(
+            InlineKeyboardButton(text="🆕 جدیدترین", callback_data="sort_series_newest"),
+            InlineKeyboardButton(text="🕰 قدیمی ترین", callback_data="sort_series_oldest"),
+            InlineKeyboardButton(text="🔤 الفبا (صعودی)", callback_data="sort_series_asc"),
+            InlineKeyboardButton(text="🔤 الفبا (نزولی)", callback_data="sort_series_desc"),
+            InlineKeyboardButton(text="🎭 بر اساس ژانر", callback_data="sort_series_genre")
+        )
+    
+    keyboard.adjust(2)
+    return keyboard.as_markup()
+
+def create_genres_keyboard() -> InlineKeyboardMarkup:
+    """Create genres selection keyboard"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM genres ORDER BY name")
+        genres = cursor.fetchall()
+    
+    keyboard = InlineKeyboardBuilder()
+    for genre in genres:
+        keyboard.add(InlineKeyboardButton(
+            text=genre['name'],
+            callback_data=f"genre_{genre['id']}"
+        ))
+    
+    keyboard.adjust(3)
+    return keyboard.as_markup()
+
+def create_quality_keyboard(item_type: str, item_id: int) -> InlineKeyboardMarkup:
+    """Create quality selection keyboard"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        if item_type == "movie":
+            cursor.execute(
+                "SELECT DISTINCT quality FROM movie_files WHERE movie_id = ? ORDER BY \
+                CASE quality WHEN '4K' THEN 1 WHEN '1080p' THEN 2 WHEN '720p' THEN 3 WHEN '480p' THEN 4 ELSE 5 END",
+                (item_id,)
+            )
+        else:  # episode
+            cursor.execute(
+                "SELECT DISTINCT quality FROM episode_files WHERE episode_id = ? ORDER BY \
+                CASE quality WHEN '4K' THEN 1 WHEN '1080p' THEN 2 WHEN '720p' THEN 3 WHEN '480p' THEN 4 ELSE 5 END",
+                (item_id,)
+            )
+        
+        qualities = cursor.fetchall()
+    
+    if not qualities:
+        return None
+    
+    keyboard = InlineKeyboardBuilder()
+    for quality in qualities:
+        keyboard.add(InlineKeyboardButton(
+            text=quality['quality'],
+            callback_data=f"quality_{item_type}_{item_id}_{quality['quality']}"
+        ))
+    
+    keyboard.adjust(2)
+    return keyboard.as_markup()
+
+def generate_share_uuid() -> str:
+    """Generate a unique UUID for sharing"""
+    return str(uuid.uuid4())
+
 # Middleware for checking channel membership
 @dp.message.middleware
 async def channel_membership_middleware(handler, event: types.Message, data: dict):
@@ -214,7 +377,7 @@ async def channel_membership_middleware(handler, event: types.Message, data: dic
         return await handler(event, data)
     
     # Skip check for certain commands
-    if event.text in ["/start", "/help"]:
+    if event.text in ["/start", "/help"] or event.text.startswith("/start share_"):
         return await handler(event, data)
     
     # Check if user has joined required channels
@@ -259,6 +422,75 @@ async def channel_membership_middleware(handler, event: types.Message, data: dic
 async def cmd_start(message: types.Message):
     """Handle /start command"""
     await update_user_info(message.from_user)
+    
+    # Check if this is a share link
+    if len(message.text.split()) > 1:
+        share_uuid = message.text.split()[1]
+        
+        # Check if it's a share UUID
+        if share_uuid.startswith("share_"):
+            share_id = share_uuid[6:]
+            
+            # Check if it's a movie
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM movies WHERE share_uuid = ?", (share_id,))
+                movie = cursor.fetchone()
+                
+                if movie:
+                    # Show movie details
+                    text = f"🎬 {movie['title']} ({movie['year']})\n\n"
+                    if movie['description']:
+                        text += f"📝 {movie['description']}\n\n"
+                    if movie['tags']:
+                        text += f"🏷 تگ ها: {movie['tags']}\n\n"
+                    
+                    text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+                    
+                    # Create inline keyboard with download button
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬇️ دانلود فیلم", callback_data=f"download_movie_{movie['id']}")]
+                    ])
+                    
+                    # Send poster if available
+                    if movie['poster_file_id']:
+                        await message.answer_photo(
+                            movie['poster_file_id'],
+                            caption=text,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await message.answer(text, reply_markup=keyboard)
+                    
+                    return
+                
+                # Check if it's an episode
+                cursor.execute("SELECT * FROM episodes WHERE share_uuid = ?", (share_id,))
+                episode = cursor.fetchone()
+                
+                if episode:
+                    # Get season and series info
+                    cursor.execute("""
+                        SELECT s.*, se.title as series_title 
+                        FROM seasons s 
+                        JOIN series se ON s.series_id = se.id 
+                        WHERE s.id = ?
+                    """, (episode['season_id'],))
+                    season = cursor.fetchone()
+                    
+                    text = f"📺 {season['series_title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}\n\n"
+                    if episode['title']:
+                        text += f"📝 {episode['title']}\n\n"
+                    
+                    text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+                    
+                    # Create inline keyboard with download button
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬇️ دانلود اپیزود", callback_data=f"download_episode_{episode['id']}")]
+                    ])
+                    
+                    await message.answer(text, reply_markup=keyboard)
+                    return
     
     welcome_text = (
         "🤖 به ربات دانلود فیلم و سریال خوش آمدید!\n\n"
@@ -347,46 +579,20 @@ async def handle_back_to_main(message: types.Message):
 @dp.message(F.text == "🎬 فیلم ها")
 async def handle_movies(message: types.Message):
     """Handle movies button"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM movies ORDER BY title LIMIT 10")
-        movies = cursor.fetchall()
-    
-    if not movies:
-        await message.answer("📭 هیچ فیلمی در سیستم وجود ندارد.")
-        return
-    
-    keyboard = InlineKeyboardBuilder()
-    for movie in movies:
-        keyboard.add(InlineKeyboardButton(
-            text=f"{movie['title']} ({movie['year']})", 
-            callback_data=f"movie_{movie['id']}"
-        ))
-    
-    keyboard.adjust(1)
-    await message.answer("🎬 لیست فیلم ها:", reply_markup=keyboard.as_markup())
+    # Show sorting options
+    await message.answer(
+        "🎬 لطفا روش مرتب سازی فیلم ها را انتخاب کنید:",
+        reply_markup=create_sorting_keyboard("movie")
+    )
 
 @dp.message(F.text == "📺 سریال ها")
 async def handle_series(message: types.Message):
     """Handle series button"""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM series ORDER BY title LIMIT 10")
-        series_list = cursor.fetchall()
-    
-    if not series_list:
-        await message.answer("📭 هیچ سریالی در سیستم وجود ندارد.")
-        return
-    
-    keyboard = InlineKeyboardBuilder()
-    for series in series_list:
-        keyboard.add(InlineKeyboardButton(
-            text=series['title'], 
-            callback_data=f"series_{series['id']}"
-        ))
-    
-    keyboard.adjust(1)
-    await message.answer("📺 لیست سریال ها:", reply_markup=keyboard.as_markup())
+    # Show sorting options
+    await message.answer(
+        "📺 لطفا روش مرتب سازی سریال ها را انتخاب کنید:",
+        reply_markup=create_sorting_keyboard("series")
+    )
 
 @dp.message(F.text == "🔍 جستجو")
 async def handle_search(message: types.Message):
@@ -411,7 +617,7 @@ async def handle_add_movie(message: types.Message, state: FSMContext):
         return
     
     await message.answer(
-        "🎬 لطفا فیلم را ارسال کنید یا فوروارد نمایید:",
+        "🎬 لطفا عنوان فیلم را وارد کنید:",
         reply_markup=create_back_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_movie_title)
@@ -450,11 +656,21 @@ async def handle_stats(message: types.Message):
         # Get user count
         cursor.execute("SELECT COUNT(*) as count FROM users")
         user_count = cursor.fetchone()['count']
+        
+        # Get total movie files count
+        cursor.execute("SELECT COUNT(*) as count FROM movie_files")
+        movie_files_count = cursor.fetchone()['count']
+        
+        # Get total episode files count
+        cursor.execute("SELECT COUNT(*) as count FROM episode_files")
+        episode_files_count = cursor.fetchone()['count']
     
     stats_text = (
         "📊 آمار ربات:\n\n"
         f"🎬 تعداد فیلم ها: {movie_count}\n"
         f"📺 تعداد سریال ها: {series_count}\n"
+        f"📁 تعداد فایل های فیلم: {movie_files_count}\n"
+        f"📁 تعداد فایل های اپیزود: {episode_files_count}\n"
         f"👥 تعداد کاربران: {user_count}"
     )
     
@@ -468,28 +684,80 @@ async def handle_edit_content(message: types.Message, state: FSMContext):
         return
     
     await message.answer(
-        "✏️ لطفا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:",
+        "✏️ لطفا نام یا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:",
         reply_markup=create_back_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_edit_item)
 
-# Handle video files from admins
-@dp.message(F.video, StateFilter(AdminStates.waiting_for_movie_title))
-async def handle_video_upload(message: types.Message, state: FSMContext):
-    """Handle video file upload from admin"""
+@dp.message(F.text == "📤 ارسال همگانی")
+async def handle_bulk_message(message: types.Message, state: FSMContext):
+    """Handle bulk message button (admin only)"""
     if not await is_admin(message.from_user.id):
         await message.answer("⛔️ شما دسترسی ادمین ندارید.")
         return
     
-    file_id = message.video.file_id
-    await state.update_data(file_id=file_id)
-    
     await message.answer(
-        "✅ فیلم دریافت شد. لطفا عنوان فیلم را وارد کنید:",
+        "📤 لطفا پیامی که می‌خواهید برای همه کاربران ارسال کنید را وارد کنید:",
         reply_markup=create_back_keyboard()
     )
-    await state.set_state(AdminStates.waiting_for_movie_title)
+    await state.set_state(AdminStates.waiting_for_bulk_message)
 
+@dp.message(F.text == "🔗 لینک اشتراک")
+async def handle_share_links(message: types.Message):
+    """Handle share links button (admin only)"""
+    if not await is_admin(message.from_user.id):
+        await message.answer("⛔️ شما دسترسی ادمین ندارید.")
+        return
+    
+    # Get all movies and series
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, year FROM movies ORDER BY title")
+        movies = cursor.fetchall()
+        
+        cursor.execute("SELECT id, title FROM series ORDER BY title")
+        series_list = cursor.fetchall()
+    
+    if not movies and not series_list:
+        await message.answer("📭 هیچ محتوایی در سیستم وجود ندارد.")
+        return
+    
+    # Create message with share links
+    text = "🔗 لینک های اشتراک:\n\n"
+    
+    if movies:
+        text += "🎬 فیلم ها:\n"
+        for movie in movies:
+            share_url = f"{BASE_SHARE_URL}share_{movie['id']}"
+            text += f"{movie['title']} ({movie['year']}): {share_url}\n"
+        text += "\n"
+    
+    if series_list:
+        text += "📺 سریال ها:\n"
+        for series in series_list:
+            # Get seasons for this series
+            cursor.execute("SELECT id, season_number FROM seasons WHERE series_id = ? ORDER BY season_number", (series['id'],))
+            seasons = cursor.fetchall()
+            
+            for season in seasons:
+                # Get episodes for this season
+                cursor.execute("SELECT id, episode_number, title FROM episodes WHERE season_id = ? ORDER BY episode_number", (season['id'],))
+                episodes = cursor.fetchall()
+                
+                for episode in episodes:
+                    share_url = f"{BASE_SHARE_URL}share_{episode['id']}"
+                    episode_title = f" - {episode['title']}" if episode['title'] else ""
+                    text += f"{series['title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}{episode_title}: {share_url}\n"
+    
+    # Split long messages
+    if len(text) > 4000:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            await message.answer(part)
+    else:
+        await message.answer(text)
+
+# Movie addition flow
 @dp.message(StateFilter(AdminStates.waiting_for_movie_title))
 async def handle_movie_title(message: types.Message, state: FSMContext):
     """Handle movie title input"""
@@ -519,33 +787,130 @@ async def handle_movie_description(message: types.Message, state: FSMContext):
 async def handle_movie_tags(message: types.Message, state: FSMContext):
     """Handle movie tags input"""
     await state.update_data(tags=message.text)
-    await message.answer("🔤 لطفا نام های替代 فیلم را با کاما جدا کنید (در صورت وجود):")
+    await message.answer("🎭 لطفا ژانرهای فیلم را انتخاب کنید:", reply_markup=create_genres_keyboard())
+    await state.set_state(AdminStates.waiting_for_movie_genres)
+
+@dp.callback_query(StateFilter(AdminStates.waiting_for_movie_genres), F.data.startswith("genre_"))
+async def handle_movie_genres(callback: types.CallbackQuery, state: FSMContext):
+    """Handle movie genres selection"""
+    genre_id = int(callback.data.split("_")[1])
+    
+    data = await state.get_data()
+    selected_genres = data.get('genres', [])
+    selected_genres.append(genre_id)
+    await state.update_data(genres=selected_genres)
+    
+    # Show confirmation button
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ تایید انتخاب ژانرها", callback_data="confirm_genres")]
+    ])
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM genres WHERE id = ?", (genre_id,))
+        genre_name = cursor.fetchone()['name']
+    
+    await callback.message.answer(f"✅ ژانر «{genre_name}» اضافه شد. برای اضافه کردن ژانرهای دیگر ادامه دهید یا تایید کنید.")
+    await callback.message.answer("ژانرهای انتخاب شده:", reply_markup=keyboard)
+    await callback.answer()
+
+@dp.callback_query(StateFilter(AdminStates.waiting_for_movie_genres), F.data == "confirm_genres")
+async def handle_confirm_genres(callback: types.CallbackQuery, state: FSMContext):
+    """Handle genres confirmation"""
+    await callback.message.answer("🔤 لطفا نام های替代 فیلم را با کاما جدا کنید (در صورت وجود):")
     await state.set_state(AdminStates.waiting_for_alternative_names)
+    await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_alternative_names))
 async def handle_movie_alternative_names(message: types.Message, state: FSMContext):
-    """Handle movie alternative names input and save movie to database"""
+    """Handle movie alternative names input"""
+    await state.update_data(alternative_names=message.text)
+    await message.answer("🖼 لطفا پوستر فیلم را ارسال کنید (اختیاری):")
+    await state.set_state(AdminStates.waiting_for_movie_poster)
+
+@dp.message(StateFilter(AdminStates.waiting_for_movie_poster), F.photo | F.text)
+async def handle_movie_poster(message: types.Message, state: FSMContext):
+    """Handle movie poster input"""
+    if message.photo:
+        await state.update_data(poster_file_id=message.photo[-1].file_id)
+    
     data = await state.get_data()
     
+    # Create movie in database
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO movies (title, year, description, tags, file_id, alternative_names)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO movies (title, year, description, tags, alternative_names, poster_file_id, share_uuid)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (data['title'], data['year'], data['description'], data['tags'], 
-             data['file_id'], message.text)
+             data.get('alternative_names', ''), data.get('poster_file_id'), generate_share_uuid())
+        )
+        movie_id = cursor.lastrowid
+        
+        # Add genres
+        for genre_id in data.get('genres', []):
+            cursor.execute(
+                "INSERT INTO movie_genres (movie_id, genre_id) VALUES (?, ?)",
+                (movie_id, genre_id)
+            )
+        
+        conn.commit()
+    
+    await message.answer(
+        f"✅ فیلم «{data['title']}» با موفقیت اضافه شد. لطفا فایل های ویدیویی با کیفیت های مختلف را ارسال کنید:",
+        reply_markup=create_back_keyboard()
+    )
+    await state.update_data(movie_id=movie_id)
+    await state.set_state(AdminStates.waiting_for_movie_files)
+
+@dp.message(StateFilter(AdminStates.waiting_for_movie_files), F.video | F.text)
+async def handle_movie_files(message: types.Message, state: FSMContext):
+    """Handle movie files upload"""
+    if message.text == "🔙 بازگشت":
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        await state.clear()
+        return
+    
+    if not message.video:
+        await message.answer("⚠️ لطفا یک فایل ویدیویی ارسال کنید:")
+        return
+    
+    data = await state.get_data()
+    movie_id = data['movie_id']
+    
+    # Ask for quality
+    await message.answer("📺 لطفا کیفیت این فایل را وارد کنید (مثلا: 1080p, 720p, 480p):")
+    await state.update_data(file_id=message.video.file_id, file_size=message.video.file_size, duration=message.video.duration)
+    await state.set_state(AdminStates.waiting_for_quality_selection)
+
+@dp.message(StateFilter(AdminStates.waiting_for_quality_selection))
+async def handle_quality_selection(message: types.Message, state: FSMContext):
+    """Handle quality selection for movie files"""
+    quality = message.text.strip()
+    data = await state.get_data()
+    movie_id = data['movie_id']
+    
+    # Save file with quality
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO movie_files (movie_id, file_id, quality, file_size, duration)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (movie_id, data['file_id'], quality, data['file_size'], data['duration'])
         )
         conn.commit()
     
     await message.answer(
-        f"✅ فیلم «{data['title']}» با موفقیت اضافه شد.",
-        reply_markup=create_admin_keyboard()
+        f"✅ فایل با کیفیت {quality} اضافه شد. می‌توانید فایل دیگری با کیفیت متفاوت ارسال کنید یا برای اتمام از دکمه بازگشت استفاده کنید.",
+        reply_markup=create_back_keyboard()
     )
-    await state.clear()
+    await state.set_state(AdminStates.waiting_for_movie_files)
 
-# Series handling
+# Series addition flow
 @dp.message(StateFilter(AdminStates.waiting_for_series_title))
 async def handle_series_title(message: types.Message, state: FSMContext):
     """Handle series title input"""
@@ -562,22 +927,115 @@ async def handle_series_description(message: types.Message, state: FSMContext):
 
 @dp.message(StateFilter(AdminStates.waiting_for_series_tags))
 async def handle_series_tags(message: types.Message, state: FSMContext):
-    """Handle series tags input and save series to database"""
+    """Handle series tags input"""
+    await state.update_data(tags=message.text)
+    await message.answer("🎭 لطفا ژانرهای سریال را انتخاب کنید:", reply_markup=create_genres_keyboard())
+    await state.set_state(AdminStates.waiting_for_series_genres)
+
+@dp.callback_query(StateFilter(AdminStates.waiting_for_series_genres), F.data.startswith("genre_"))
+async def handle_series_genres(callback: types.CallbackQuery, state: FSMContext):
+    """Handle series genres selection"""
+    genre_id = int(callback.data.split("_")[1])
+    
+    data = await state.get_data()
+    selected_genres = data.get('genres', [])
+    selected_genres.append(genre_id)
+    await state.update_data(genres=selected_genres)
+    
+    # Show confirmation button
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ تایید انتخاب ژانرها", callback_data="confirm_series_genres")]
+    ])
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM genres WHERE id = ?", (genre_id,))
+        genre_name = cursor.fetchone()['name']
+    
+    await callback.message.answer(f"✅ ژانر «{genre_name}» اضافه شد. برای اضافه کردن ژانرهای دیگر ادامه دهید یا تایید کنید.")
+    await callback.message.answer("ژانرهای انتخاب شده:", reply_markup=keyboard)
+    await callback.answer()
+
+@dp.callback_query(StateFilter(AdminStates.waiting_for_series_genres), F.data == "confirm_series_genres")
+async def handle_confirm_series_genres(callback: types.CallbackQuery, state: FSMContext):
+    """Handle series genres confirmation"""
+    await callback.message.answer("🔤 لطفا نام های替代 سریال را با کاما جدا کنید (در صورت وجود):")
+    await state.set_state(AdminStates.waiting_for_alternative_names)
+    await callback.answer()
+
+@dp.message(StateFilter(AdminStates.waiting_for_alternative_names))
+async def handle_series_alternative_names(message: types.Message, state: FSMContext):
+    """Handle series alternative names input"""
+    await state.update_data(alternative_names=message.text)
+    await message.answer("🖼 لطفا پوستر سریال را ارسال کنید (اختیاری):")
+    await state.set_state(AdminStates.waiting_for_series_poster)
+
+@dp.message(StateFilter(AdminStates.waiting_for_series_poster), F.photo | F.text)
+async def handle_series_poster(message: types.Message, state: FSMContext):
+    """Handle series poster input"""
+    if message.photo:
+        await state.update_data(poster_file_id=message.photo[-1].file_id)
+    
     data = await state.get_data()
     
+    # Create series in database
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO series (title, description, tags)
-            VALUES (?, ?, ?)
+            INSERT INTO series (title, description, tags, alternative_names, poster_file_id, share_uuid)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (data['title'], data['description'], message.text)
+            (data['title'], data['description'], data['tags'], 
+             data.get('alternative_names', ''), data.get('poster_file_id'), generate_share_uuid())
         )
+        series_id = cursor.lastrowid
+        
+        # Add genres
+        for genre_id in data.get('genres', []):
+            cursor.execute(
+                "INSERT INTO series_genres (series_id, genre_id) VALUES (?, ?)",
+                (series_id, genre_id)
+            )
+        
         conn.commit()
     
     await message.answer(
-        f"✅ سریال «{data['title']}» با موفقیت اضافه شد.",
+        f"✅ سریال «{data['title']}» با موفقیت اضافه شد. اکنون می‌توانید فصل ها را اضافه کنید.",
+        reply_markup=create_admin_keyboard()
+    )
+    await state.clear()
+
+# Bulk message handling
+@dp.message(StateFilter(AdminStates.waiting_for_bulk_message))
+async def handle_bulk_message_text(message: types.Message, state: FSMContext):
+    """Handle bulk message text"""
+    if message.text == "🔙 بازگشت":
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        await state.clear()
+        return
+    
+    # Get all users
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users")
+        users = cursor.fetchall()
+    
+    success_count = 0
+    fail_count = 0
+    
+    for user in users:
+        try:
+            await bot.send_message(user['id'], f"📢 پیام همگانی:\n\n{message.text}")
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send message to user {user['id']}: {e}")
+            fail_count += 1
+    
+    await message.answer(
+        f"✅ ارسال همگانی завер شد:\n\n"
+        f"✅ موفق: {success_count}\n"
+        f"❌ ناموفق: {fail_count}",
         reply_markup=create_admin_keyboard()
     )
     await state.clear()
@@ -585,22 +1043,26 @@ async def handle_series_tags(message: types.Message, state: FSMContext):
 # Edit content handling
 @dp.message(StateFilter(AdminStates.waiting_for_edit_item))
 async def handle_edit_item(message: types.Message, state: FSMContext):
-    """Handle item ID input for editing"""
-    item_id = message.text
+    """Handle item name or ID input for editing"""
+    search_term = message.text
     
     # Check if item exists in movies
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM movies WHERE id = ?", (item_id,))
+        cursor.execute(
+            "SELECT * FROM movies WHERE title LIKE ? OR id = ?", 
+            (f"%{search_term}%", search_term)
+        )
         movie = cursor.fetchone()
         
         if movie:
-            await state.update_data(item_type="movie", item_id=item_id, item_data=movie)
+            await state.update_data(item_type="movie", item_id=movie['id'], item_data=dict(movie))
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
-                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="ژانرها")],
+                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
             )
@@ -613,15 +1075,19 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
             return
         
         # Check if item exists in series
-        cursor.execute("SELECT * FROM series WHERE id = ?", (item_id,))
+        cursor.execute(
+            "SELECT * FROM series WHERE title LIKE ? OR id = ?", 
+            (f"%{search_term}%", search_term)
+        )
         series = cursor.fetchone()
         
         if series:
-            await state.update_data(item_type="series", item_id=item_id, item_data=series)
+            await state.update_data(item_type="series", item_id=series['id'], item_data=dict(series))
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
                     [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های替代")],
+                    [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -633,24 +1099,82 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
             )
             await state.set_state(AdminStates.waiting_for_edit_field)
             return
+        
+        # Check if item exists in episodes
+        cursor.execute(
+            "SELECT e.*, s.season_number, se.title as series_title FROM episodes e " +
+            "JOIN seasons s ON e.season_id = s.id " +
+            "JOIN series se ON s.series_id = se.id " +
+            "WHERE e.title LIKE ? OR e.id = ?",
+            (f"%{search_term}%", search_term)
+        )
+        episode = cursor.fetchone()
+        
+        if episode:
+            await state.update_data(item_type="episode", item_id=episode['id'], item_data=dict(episode))
+            keyboard = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
+                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="افزودن فایل")],
+                    [KeyboardButton(text="🔙 بازگشت")]
+                ],
+                resize_keyboard=True
+            )
+            await message.answer(
+                f"📺 اپیزود: {episode['series_title']} - فصل {episode['season_number']} - قسمت {episode['episode_number']}\n\n"
+                "لطفا فیلدی که می‌خواهید ویرایش کنید را انتخاب کنید:",
+                reply_markup=keyboard
+            )
+            await state.set_state(AdminStates.waiting_for_edit_field)
+            return
     
-    await message.answer("⚠️ آیتمی با این ID یافت نشد. لطفا دوباره尝试 کنید:")
+    await message.answer("⚠️ آیتمی با این نام یا ID یافت نشد. لطفا دوباره尝试 کنید:")
 
 @dp.message(StateFilter(AdminStates.waiting_for_edit_field))
 async def handle_edit_field(message: types.Message, state: FSMContext):
     """Handle field selection for editing"""
     if message.text == "🔙 بازگشت":
-        await message.answer("✏️ لطفا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:", reply_markup=create_back_keyboard())
+        await message.answer("✏️ لطفا نام یا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:", reply_markup=create_back_keyboard())
         await state.set_state(AdminStates.waiting_for_edit_item)
         return
     
     data = await state.get_data()
+    item_type = data['item_type']
+    
+    if message.text == "افزودن فایل":
+        if item_type == "movie":
+            await message.answer(
+                "🎬 لطفا فایل ویدیویی جدید را ارسال کنید:",
+                reply_markup=create_back_keyboard()
+            )
+            await state.set_state(AdminStates.waiting_for_movie_files)
+        elif item_type == "episode":
+            await message.answer(
+                "📺 لطفا فایل ویدیویی جدید را ارسال کنید:",
+                reply_markup=create_back_keyboard()
+            )
+            await state.set_state(AdminStates.waiting_for_episode_files)
+        return
+    
+    if message.text == "افزودن فصل" and item_type == "series":
+        await message.answer(
+            "📺 لطفا شماره فصل جدید را وارد کنید:",
+            reply_markup=create_back_keyboard()
+        )
+        await state.set_state(AdminStates.waiting_for_season_number)
+        return
+    
+    if message.text == "ژانرها":
+        await message.answer("🎭 لطفا ژانرهای جدید را انتخاب کنید:", reply_markup=create_genres_keyboard())
+        return
+    
     field_mapping = {
         "عنوان": "title",
         "سال": "year",
         "توضیحات": "description",
         "تگ ها": "tags",
-        "نام های替代": "alternative_names"
+        "نام های替代": "alternative_names",
+        "شماره قسمت": "episode_number"
     }
     
     if message.text not in field_mapping:
@@ -677,15 +1201,26 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
-                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="نام هایAlternative"), KeyboardButton(text="ژانرها")],
+                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
             )
-        else:
+        elif data['item_type'] == "series":
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
-                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های替代")],
+                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام هایAlternative")],
+                    [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
+                    [KeyboardButton(text="🔙 بازگشت")]
+                ],
+                resize_keyboard=True
+            )
+        else:  # episode
+            keyboard = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
+                    [KeyboardButton(text="نام هایAlternative"), KeyboardButton(text="افزودن فایل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -706,8 +1241,10 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
         cursor = conn.cursor()
         if item_type == "movie":
             cursor.execute(f"UPDATE movies SET {field} = ? WHERE id = ?", (value, item_id))
-        else:  # series
+        elif item_type == "series":
             cursor.execute(f"UPDATE series SET {field} = ? WHERE id = ?", (value, item_id))
+        else:  # episode
+            cursor.execute(f"UPDATE episodes SET {field} = ? WHERE id = ?", (value, item_id))
         conn.commit()
     
     await message.answer(
@@ -734,14 +1271,14 @@ async def handle_search_query(message: types.Message):
         cursor.execute(
             """
             SELECT id, title, year, 'movie' as type FROM movies 
-            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ?
+            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ? OR description LIKE ?
             UNION
             SELECT id, title, NULL as year, 'series' as type FROM series 
-            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ?
+            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ? OR description LIKE ?
             LIMIT 20
             """,
-            (f"%{query}%", f"%{query}%", f"%{query}%", 
-             f"%{query}%", f"%{query}%", f"%{query}%")
+            (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", 
+             f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%")
         )
         results = cursor.fetchall()
     
@@ -768,6 +1305,156 @@ async def handle_search_query(message: types.Message):
         reply_markup=keyboard.as_markup()
     )
 
+# Callback query handlers for sorting
+@dp.callback_query(F.data.startswith("sort_"))
+async def handle_sorting_callback(callback: types.CallbackQuery):
+    """Handle sorting callback"""
+    data_parts = callback.data.split("_")
+    content_type = data_parts[1]  # movie or series
+    sort_type = data_parts[2]  # newest, oldest, asc, desc, genre
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        if content_type == "movie":
+            if sort_type == "newest":
+                cursor.execute("SELECT * FROM movies ORDER BY created_at DESC LIMIT 20")
+            elif sort_type == "oldest":
+                cursor.execute("SELECT * FROM movies ORDER BY created_at ASC LIMIT 20")
+            elif sort_type == "asc":
+                cursor.execute("SELECT * FROM movies ORDER BY title ASC LIMIT 20")
+            elif sort_type == "desc":
+                cursor.execute("SELECT * FROM movies ORDER BY title DESC LIMIT 20")
+            elif sort_type == "genre":
+                await callback.message.answer("🎭 لطفا یک ژانر برای فیلتر کردن انتخاب کنید:", reply_markup=create_genres_keyboard())
+                await callback.answer()
+                return
+            
+            items = cursor.fetchall()
+            
+            if not items:
+                await callback.message.answer("📭 هیچ فیلمی در سیستم وجود ندارد.")
+                await callback.answer()
+                return
+            
+            keyboard = InlineKeyboardBuilder()
+            for movie in items:
+                keyboard.add(InlineKeyboardButton(
+                    text=f"{movie['title']} ({movie['year']})", 
+                    callback_data=f"movie_{movie['id']}"
+                ))
+            
+            text = "🎬 لیست فیلم ها:"
+        
+        else:  # series
+            if sort_type == "newest":
+                cursor.execute("SELECT * FROM series ORDER BY created_at DESC LIMIT 20")
+            elif sort_type == "oldest":
+                cursor.execute("SELECT * FROM series ORDER BY created_at ASC LIMIT 20")
+            elif sort_type == "asc":
+                cursor.execute("SELECT * FROM series ORDER BY title ASC LIMIT 20")
+            elif sort_type == "desc":
+                cursor.execute("SELECT * FROM series ORDER BY title DESC LIMIT 20")
+            elif sort_type == "genre":
+                await callback.message.answer("🎭 لطفا یک ژانر برای فیلتر کردن انتخاب کنید:", reply_markup=create_genres_keyboard())
+                await callback.answer()
+                return
+            
+            items = cursor.fetchall()
+            
+            if not items:
+                await callback.message.answer("📭 هیچ سریالی در سیستم وجود ندارد.")
+                await callback.answer()
+                return
+            
+            keyboard = InlineKeyboardBuilder()
+            for series in items:
+                keyboard.add(InlineKeyboardButton(
+                    text=series['title'], 
+                    callback_data=f"series_{series['id']}"
+                ))
+            
+            text = "📺 لیست سریال ها:"
+    
+    keyboard.adjust(1)
+    await callback.message.answer(text, reply_markup=keyboard.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("genre_"))
+async def handle_genre_filter(callback: types.CallbackQuery):
+    """Handle genre filter callback"""
+    genre_id = int(callback.data.split("_")[1])
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Get genre name
+        cursor.execute("SELECT name FROM genres WHERE id = ?", (genre_id,))
+        genre = cursor.fetchone()
+        
+        if not genre:
+            await callback.answer("⚠️ ژانر یافت نشد.")
+            return
+        
+        # Check if we're filtering movies or series
+        if "sort_movie" in callback.message.text:
+            cursor.execute(
+                """
+                SELECT m.* FROM movies m
+                JOIN movie_genres mg ON m.id = mg.movie_id
+                WHERE mg.genre_id = ?
+                ORDER BY m.title
+                LIMIT 20
+                """,
+                (genre_id,)
+            )
+            items = cursor.fetchall()
+            
+            if not items:
+                await callback.message.answer(f"📭 هیچ فیلمی در ژانر «{genre['name']}» وجود ندارد.")
+                await callback.answer()
+                return
+            
+            keyboard = InlineKeyboardBuilder()
+            for movie in items:
+                keyboard.add(InlineKeyboardButton(
+                    text=f"{movie['title']} ({movie['year']})", 
+                    callback_data=f"movie_{movie['id']}"
+                ))
+            
+            text = f"🎬 فیلم های ژانر {genre['name']}:"
+        
+        else:  # series
+            cursor.execute(
+                """
+                SELECT s.* FROM series s
+                JOIN series_genres sg ON s.id = sg.series_id
+                WHERE sg.genre_id = ?
+                ORDER BY s.title
+                LIMIT 20
+                """,
+                (genre_id,)
+            )
+            items = cursor.fetchall()
+            
+            if not items:
+                await callback.message.answer(f"📭 هیچ سریالی در ژانر «{genre['name']}» وجود ندارد.")
+                await callback.answer()
+                return
+            
+            keyboard = InlineKeyboardBuilder()
+            for series in items:
+                keyboard.add(InlineKeyboardButton(
+                    text=series['title'], 
+                    callback_data=f"series_{series['id']}"
+                ))
+            
+            text = f"📺 سریال های ژانر {genre['name']}:"
+    
+    keyboard.adjust(1)
+    await callback.message.answer(text, reply_markup=keyboard.as_markup())
+    await callback.answer()
+
 # Callback query handlers for movies and series
 @dp.callback_query(F.data.startswith("movie_"))
 async def handle_movie_callback(callback: types.CallbackQuery):
@@ -783,6 +1470,10 @@ async def handle_movie_callback(callback: types.CallbackQuery):
         await callback.answer("⚠️ فیلم یافت نشد.")
         return
     
+    # Check if movie has multiple qualities
+    cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM movie_files WHERE movie_id = ?", (movie_id,))
+    quality_count = cursor.fetchone()['quality_count']
+    
     # Create message text
     text = f"🎬 {movie['title']} ({movie['year']})\n\n"
     if movie['description']:
@@ -790,12 +1481,33 @@ async def handle_movie_callback(callback: types.CallbackQuery):
     if movie['tags']:
         text += f"🏷 تگ ها: {movie['tags']}\n\n"
     
-    text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+    # Get genres
+    cursor.execute(
+        """
+        SELECT g.name FROM genres g
+        JOIN movie_genres mg ON g.id = mg.genre_id
+        WHERE mg.movie_id = ?
+        """,
+        (movie_id,)
+    )
+    genres = cursor.fetchall()
+    if genres:
+        genre_names = ", ".join([genre['name'] for genre in genres])
+        text += f"🎭 ژانرها: {genre_names}\n\n"
     
-    # Create inline keyboard with download button
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬇️ دانلود فیلم", callback_data=f"download_movie_{movie_id}")]
-    ])
+    if quality_count > 1:
+        text += "📺 لطفا کیفیت مورد نظر را انتخاب کنید:"
+        keyboard = create_quality_keyboard("movie", movie_id)
+    else:
+        text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬇️ دانلود فیلم", callback_data=f"download_movie_{movie_id}")]
+        ])
+    
+    # Add share button
+    if keyboard:
+        share_url = f"{BASE_SHARE_URL}share_{movie['share_uuid']}"
+        keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔗 اشتراک گذاری", url=share_url)])
     
     # Send poster if available
     if movie['poster_file_id']:
@@ -834,6 +1546,20 @@ async def handle_series_callback(callback: types.CallbackQuery):
     if series['tags']:
         text += f"🏷 تگ ها: {series['tags']}\n\n"
     
+    # Get genres
+    cursor.execute(
+        """
+        SELECT g.name FROM genres g
+        JOIN series_genres sg ON g.id = sg.genre_id
+        WHERE sg.series_id = ?
+        """,
+        (series_id,)
+    )
+    genres = cursor.fetchall()
+    if genres:
+        genre_names = ", ".join([genre['name'] for genre in genres])
+        text += f"🎭 ژانرها: {genre_names}\n\n"
+    
     if not seasons:
         text += "📭 هیچ فصلی برای این سریال وجود ندارد."
         await callback.message.answer(text)
@@ -851,6 +1577,10 @@ async def handle_series_callback(callback: types.CallbackQuery):
         ))
     
     keyboard.adjust(1)
+    
+    # Add share button
+    share_url = f"{BASE_SHARE_URL}share_{series['share_uuid']}"
+    keyboard.row(InlineKeyboardButton(text="🔗 اشتراک گذاری", url=share_url))
     
     # Send poster if available
     if series['poster_file_id']:
@@ -927,19 +1657,47 @@ async def handle_episode_callback(callback: types.CallbackQuery):
         cursor.execute("SELECT s.*, se.title as series_title FROM seasons s JOIN series se ON s.series_id = se.id WHERE s.id = ?", (episode['season_id'],))
         season = cursor.fetchone()
     
+    # Check if episode has multiple qualities
+    cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM episode_files WHERE episode_id = ?", (episode_id,))
+    quality_count = cursor.fetchone()['quality_count']
+    
     text = f"📺 {season['series_title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}\n\n"
     if episode['title']:
         text += f"📝 {episode['title']}\n\n"
     
-    text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+    if quality_count > 1:
+        text += "📺 لطفا کیفیت مورد نظر را انتخاب کنید:"
+        keyboard = create_quality_keyboard("episode", episode_id)
+    else:
+        text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬇️ دانلود اپیزود", callback_data=f"download_episode_{episode_id}")]
+        ])
     
-    # Create inline keyboard with download button
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬇️ دانلود اپیزود", callback_data=f"download_episode_{episode_id}")]
-    ])
+    # Add share button
+    if keyboard:
+        share_url = f"{BASE_SHARE_URL}share_{episode['share_uuid']}"
+        keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔗 اشتراک گذاری", url=share_url)])
     
     await callback.message.answer(text, reply_markup=keyboard)
     await callback.answer()
+
+@dp.callback_query(F.data.startswith("quality_"))
+async def handle_quality_callback(callback: types.CallbackQuery):
+    """Handle quality selection callback"""
+    data_parts = callback.data.split("_")
+    item_type = data_parts[1]  # movie or episode
+    item_id = data_parts[2]
+    quality = data_parts[3]
+    
+    # Update callback data to proceed with download
+    if item_type == "movie":
+        callback.data = f"download_movie_{item_id}_{quality}"
+    else:  # episode
+        callback.data = f"download_episode_{item_id}_{quality}"
+    
+    # Handle the download
+    await handle_download_callback(callback)
 
 @dp.callback_query(F.data.startswith("download_"))
 async def handle_download_callback(callback: types.CallbackQuery):
@@ -947,6 +1705,7 @@ async def handle_download_callback(callback: types.CallbackQuery):
     data_parts = callback.data.split("_")
     content_type = data_parts[1]  # movie or episode
     content_id = data_parts[2]
+    quality = data_parts[3] if len(data_parts) > 3 else None
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -958,10 +1717,28 @@ async def handle_download_callback(callback: types.CallbackQuery):
                 await callback.answer("⚠️ فیلم یافت نشد.")
                 return
             
+            # Get the file with specified quality or the first available
+            if quality:
+                cursor.execute("SELECT * FROM movie_files WHERE movie_id = ? AND quality = ?", (content_id, quality))
+            else:
+                cursor.execute("SELECT * FROM movie_files WHERE movie_id = ? ORDER BY \
+                              CASE quality WHEN '4K' THEN 1 WHEN '1080p' THEN 2 WHEN '720p' THEN 3 WHEN '480p' THEN 4 ELSE 5 END LIMIT 1", 
+                              (content_id,))
+            
+            file_data = cursor.fetchone()
+            
+            if not file_data:
+                await callback.answer("⚠️ فایل فیلم یافت نشد.")
+                return
+            
             # Send the video file
+            caption = f"🎬 {content['title']} ({content['year']})"
+            if quality:
+                caption += f" - {quality}"
+            
             await callback.message.answer_video(
-                content['file_id'],
-                caption=f"🎬 {content['title']} ({content['year']})"
+                file_data['file_id'],
+                caption=caption
             )
             
         else:  # episode
@@ -969,6 +1746,20 @@ async def handle_download_callback(callback: types.CallbackQuery):
             episode = cursor.fetchone()
             if not episode:
                 await callback.answer("⚠️ اپیزود یافت نشد.")
+                return
+            
+            # Get the file with specified quality or the first available
+            if quality:
+                cursor.execute("SELECT * FROM episode_files WHERE episode_id = ? AND quality = ?", (content_id, quality))
+            else:
+                cursor.execute("SELECT * FROM episode_files WHERE episode_id = ? ORDER BY \
+                              CASE quality WHEN '4K' THEN 1 WHEN '1080p' THEN 2 WHEN '720p' THEN 3 WHEN '480p' THEN 4 ELSE 5 END LIMIT 1", 
+                              (content_id,))
+            
+            file_data = cursor.fetchone()
+            
+            if not file_data:
+                await callback.answer("⚠️ فایل اپیزود یافت نشد.")
                 return
             
             # Get season and series info
@@ -979,9 +1770,11 @@ async def handle_download_callback(callback: types.CallbackQuery):
             caption = f"📺 {season['series_title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}"
             if episode['title']:
                 caption += f" - {episode['title']}"
+            if quality:
+                caption += f" - {quality}"
             
             await callback.message.answer_video(
-                episode['file_id'],
+                file_data['file_id'],
                 caption=caption
             )
     
