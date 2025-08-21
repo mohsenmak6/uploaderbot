@@ -13,7 +13,7 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardRemove, ContentType, InlineQuery, InlineQueryResultArticle,
     InputTextMessageContent, InlineQueryResultVideo, InlineQueryResultCachedVideo,
-    ChatJoinRequest
+    ChatJoinRequest, ReplyKeyboardMarkup, KeyboardButton
 )
 from aiogram.filters import Command, CommandStart, Filter
 from aiogram.fsm.context import FSMContext
@@ -525,7 +525,23 @@ class Database:
             return {}
 
 # Keyboard helpers
-def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+def get_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="🎬 فیلم‌ها"), KeyboardButton(text="📺 سریال‌ها")],
+        [KeyboardButton(text="🔍 جستجو"), KeyboardButton(text="ℹ️ راهنما")]
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton(text="⚙️ پنل ادمین")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_admin_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="📊 آمار کامل"), KeyboardButton(text="📤 ارسال پیام")],
+        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_inline_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🎬 فیلم‌ها", callback_data="show_movies"),
          InlineKeyboardButton(text="📺 سریال‌ها", callback_data="show_series")],
@@ -535,7 +551,7 @@ def get_main_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         keyboard.append([InlineKeyboardButton(text="⚙️ پنل ادمین", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_admin_keyboard() -> InlineKeyboardMarkup:
+def get_inline_admin_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="📊 آمار کامل", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📤 ارسال پیام به کاربران", callback_data="admin_broadcast")],
@@ -656,20 +672,14 @@ def get_channel_join_keyboard() -> InlineKeyboardMarkup:
 
 # Channel membership check
 async def check_channel_membership(user_id: int) -> bool:
-    """
-    IMPORTANT: For this to work properly, your bot must:
-    1. Be an admin in all the required channels
-    2. Have 'Get Members' permission in those channels
-    3. The channels must be public or the bot must be added to private channels
-    
-    In production, you would use:
-    await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-    """
     return await Database.get_user_channel_status(user_id)
 
 # Handlers
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    # Clear any existing state
+    await state.clear()
+    
     # Track user
     user_id = message.from_user.id
     username = message.from_user.username
@@ -707,43 +717,145 @@ async def cmd_start(message: Message):
         """
         await message.answer(welcome_text, reply_markup=get_main_keyboard(is_admin))
 
+@dp.message(F.text == "🔙 بازگشت به منوی اصلی")
+async def back_to_main_menu(message: Message, state: FSMContext):
+    await state.clear()
+    is_admin = message.from_user.id in ADMINS
+    await message.answer("منوی اصلی:", reply_markup=get_main_keyboard(is_admin))
+
+@dp.message(F.text == "ℹ️ راهنما")
+async def show_help(message: Message, state: FSMContext):
+    await state.clear()
+    help_text = """
+    📖 راهنمای ربات:
+
+    🎬 فیلم‌ها - مشاهده و جستجوی فیلم‌ها
+    📺 سریال‌ها - مشاهده و جستجوی سریال‌ها
+    🔍 جستجو - جستجوی محتوا
+    ⚙️ پنل ادمین - مدیریت ربات (فقط ادمین)
+
+    برای آپلود محتوا، ویدیو را برای ربات ارسال کنید.
+    """
+    await message.answer(help_text, reply_markup=get_main_keyboard(message.from_user.id in ADMINS))
+
+@dp.message(F.text == "🎬 فیلم‌ها")
+async def show_movies_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🎬 فیلم‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
+        reply_markup=get_movies_main_keyboard()
+    )
+
+@dp.message(F.text == "📺 سریال‌ها")
+async def show_series_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "📺 سریال‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
+        reply_markup=get_series_main_keyboard()
+    )
+
+@dp.message(F.text == "🔍 جستجو")
+async def show_search(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
+
+@dp.message(F.text == "⚙️ پنل ادمین")
+async def show_admin_panel(message: Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ شما دسترسی ادمین ندارید.")
+        return
+    await message.answer("⚙️ پنل مدیریت ادمین", reply_markup=get_admin_keyboard())
+
+@dp.message(F.text == "📊 آمار کامل")
+async def show_admin_stats(message: Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ شما دسترسی ادمین ندارید.")
+        return
+    
+    stats = await Database.get_stats()
+    stats_text = f"""
+    📊 آمار کامل ربات:
+
+    👥 کاربران:
+    • کل کاربران: {stats.get('total_users', 0)}
+    • کاربران فعال امروز: {stats.get('active_today', 0)}
+    • عضو کانال‌ها: {stats.get('channel_members', 0)}
+
+    🎬 محتوا:
+    • فیلم‌ها: {stats.get('total_movies', 0)}
+    • سریال‌ها: {stats.get('total_series', 0)}
+    • اپیزودها: {stats.get('total_episodes', 0)}
+    • کیفیت‌های مختلف: {stats.get('total_quality_options', 0)}
+
+    👀 بازدیدها:
+    • بازدید فیلم‌ها: {stats.get('movie_views', 0)}
+    • بازدید اپیزودها: {stats.get('episode_views', 0)}
+
+    📥 دانلودها:
+    • دانلود فیلم‌ها: {stats.get('movie_downloads', 0)}
+    • دانلود اپیزودها: {stats.get('episode_downloads', 0)}
+    """
+    
+    await message.answer(stats_text, reply_markup=get_admin_keyboard())
+
+@dp.message(F.text == "📤 ارسال پیام")
+async def show_broadcast_options(message: Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ شما دسترسی ادمین ندارید.")
+        return
+    
+    await message.answer(
+        "📤 انتخاب نوع ارسال پیام:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 ارسال به همه کاربران", callback_data="admin_broadcast")],
+            [InlineKeyboardButton(text="✉️ ارسال به کاربر خاص", callback_data="admin_message_user")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_back")]
+        ])
+    )
+
 @dp.callback_query(F.data == "check_membership")
-async def check_membership_callback(callback: CallbackQuery):
+async def check_membership_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     user_id = callback.from_user.id
     # In a real scenario, you would verify actual membership using Telegram API
-    # For now, we'll simulate it by updating the database
     await Database.update_user_channel_status(user_id, True)
     
     is_admin = user_id in ADMINS
     await callback.message.edit_text(
         "✅ از عضویت شما متشکریم! حالا می‌توانید از ربات استفاده کنید.",
-        reply_markup=get_main_keyboard(is_admin)
+        reply_markup=get_inline_main_keyboard(is_admin)
     )
     await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback: CallbackQuery):
+async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     is_admin = callback.from_user.id in ADMINS
     await callback.message.edit_text(
         "🤖 به ربات مدیا خوش آمدید!",
-        reply_markup=get_main_keyboard(is_admin)
+        reply_markup=get_inline_main_keyboard(is_admin)
     )
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_panel")
-async def admin_panel_callback(callback: CallbackQuery):
+async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
     
     await callback.message.edit_text(
         "⚙️ پنل مدیریت ادمین",
-        reply_markup=get_admin_keyboard()
+        reply_markup=get_inline_admin_keyboard()
     )
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_stats")
-async def admin_stats_callback(callback: CallbackQuery):
+async def admin_stats_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
@@ -772,7 +884,7 @@ async def admin_stats_callback(callback: CallbackQuery):
     • دانلود اپیزودها: {stats.get('episode_downloads', 0)}
     """
     
-    await callback.message.edit_text(stats_text, reply_markup=get_admin_keyboard())
+    await callback.message.edit_text(stats_text, reply_markup=get_inline_admin_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_broadcast")
@@ -845,16 +957,18 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     await state.clear()
 
 @dp.callback_query(F.data == "search")
-async def search_callback(callback: CallbackQuery):
+async def search_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
     await callback.answer()
 
 @dp.message(Command("search"))
-async def cmd_search(message: Message):
+async def cmd_search(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
 
 @dp.message(F.text & ~F.text.startswith('/'))
-async def handle_search(message: Message):
+async def handle_search(message: Message, state: FSMContext):
     if len(message.text) < 2:
         await message.answer("❌ عبارت جستجو باید حداقل ۲ کاراکتر باشد.")
         return
@@ -877,7 +991,7 @@ async def handle_search(message: Message):
         await message.answer("❌ خطایی در جستجو رخ داد.")
 
 @dp.callback_query(F.data.startswith("download_"))
-async def download_quality_callback(callback: CallbackQuery):
+async def download_quality_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if not await check_channel_membership(user_id):
         await callback.message.answer(
@@ -911,7 +1025,7 @@ async def download_quality_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("get_"))
-async def get_content_callback(callback: CallbackQuery):
+async def get_content_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if not await check_channel_membership(user_id):
         await callback.message.answer(
@@ -936,7 +1050,7 @@ async def get_content_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("share_"))
-async def share_content_callback(callback: CallbackQuery):
+async def share_content_callback(callback: CallbackQuery, state: FSMContext):
     data = callback.data.split('_')
     content_type = data[1]
     content_id = int(data[2])
@@ -946,7 +1060,8 @@ async def share_content_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "show_movies")
-async def show_movies_callback(callback: CallbackQuery):
+async def show_movies_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(
         "🎬 فیلم‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
         reply_markup=get_movies_main_keyboard()
@@ -954,7 +1069,8 @@ async def show_movies_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "show_series")
-async def show_series_callback(callback: CallbackQuery):
+async def show_series_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(
         "📺 سریال‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
         reply_markup=get_series_main_keyboard()
@@ -962,7 +1078,8 @@ async def show_series_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_newest")
-async def movies_newest_callback(callback: CallbackQuery):
+async def movies_newest_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     movies = await Database.get_all_movies("newest")
     if not movies:
         await callback.message.answer("❌ هیچ فیلمی موجود نیست.")
@@ -976,7 +1093,8 @@ async def movies_newest_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_by_year")
-async def movies_by_year_callback(callback: CallbackQuery):
+async def movies_by_year_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     movies = await Database.get_all_movies("year")
     if not movies:
         await callback.message.answer("❌ هیچ فیلمی موجود نیست.")
@@ -990,7 +1108,8 @@ async def movies_by_year_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_categories")
-async def movies_categories_callback(callback: CallbackQuery):
+async def movies_categories_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     categories = await Database.get_movie_categories()
     if not categories:
         await callback.message.answer("❌ هیچ دسته‌بندی‌ای موجود نیست.")
@@ -1004,7 +1123,8 @@ async def movies_categories_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movies_category_"))
-async def movies_category_callback(callback: CallbackQuery):
+async def movies_category_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     category = callback.data.split('_')[2]
     movies = await Database.get_all_movies("newest", category)
     if not movies:
@@ -1019,7 +1139,8 @@ async def movies_category_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "series_newest")
-async def series_newest_callback(callback: CallbackQuery):
+async def series_newest_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     series = await Database.get_all_series("newest")
     if not series:
         await callback.message.answer("❌ هیچ سریالی موجود نیست.")
@@ -1033,7 +1154,8 @@ async def series_newest_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "series_categories")
-async def series_categories_callback(callback: CallbackQuery):
+async def series_categories_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     categories = await Database.get_series_categories()
     if not categories:
         await callback.message.answer("❌ هیچ دسته‌بندی‌ای موجود نیست.")
@@ -1047,7 +1169,8 @@ async def series_categories_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_category_"))
-async def series_category_callback(callback: CallbackQuery):
+async def series_category_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     category = callback.data.split('_')[2]
     series = await Database.get_all_series("newest", category)
     if not series:
@@ -1062,7 +1185,8 @@ async def series_category_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movies_page_"))
-async def movies_page_callback(callback: CallbackQuery):
+async def movies_page_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     data = callback.data.split('_')
     page = int(data[2])
     sort_by = data[3]
@@ -1073,7 +1197,8 @@ async def movies_page_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_page_"))
-async def series_page_callback(callback: CallbackQuery):
+async def series_page_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     data = callback.data.split('_')
     page = int(data[2])
     sort_by = data[3]
@@ -1084,7 +1209,8 @@ async def series_page_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movie_"))
-async def movie_detail_callback(callback: CallbackQuery):
+async def movie_detail_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     movie_id = int(callback.data.split('_')[1])
     movie = await Database.get_movie_by_id(movie_id)
     if movie:
@@ -1099,7 +1225,8 @@ async def movie_detail_callback(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_"))
-async def series_detail_callback(callback: CallbackQuery):
+async def series_detail_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     series_id = int(callback.data.split('_')[1])
     series = await Database.get_series_by_id(series_id)
     if series:
@@ -1395,6 +1522,21 @@ async def handle_deep_link(message: Message, deep_link: str, is_admin: bool):
     except Exception as e:
         logger.error(f"Deep link error: {e}")
         await message.answer("❌ خطا در پردازش لینک.")
+
+# Add movie command
+@dp.message(Command("addmovie"))
+async def cmd_addmovie(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ فقط ادمین‌ها می‌توانند محتوا آپلود کنند.")
+        return
+    
+    await message.answer(
+        "🎬 لطفا اطلاعات فیلم را به این فرمت وارد کنید:\n"
+        "عنوان | سال | توضیحات | تگ‌ها | دسته‌بندی (اختیاری)\n\n"
+        "مثال:\n"
+        "اینترلستلر | 2014 | فیلمی درباره سفر در فضا | علمی تخیلی,فضا,کریستوفر نولان | علمی تخیلی"
+    )
+    await state.set_state(UploadStates.waiting_for_movie_metadata)
 
 # Error handler
 @dp.errors()
