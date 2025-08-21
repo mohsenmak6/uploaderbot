@@ -427,7 +427,7 @@ class Database:
                 )
                 return await cursor.fetchall()
         except Exception as e:
-            logger.error(f"Error getting series: {极e}")
+            logger.error(f"Error getting series: {e}")
             return []
 
     @staticmethod
@@ -451,7 +451,7 @@ class Database:
             return []
 
     @staticmethod
-    async def increment_view(content_type:极 str, content_id: int):
+    async def increment_view(content_type: str, content_id: int):
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 if content_type == 'movie':
@@ -467,11 +467,11 @@ class Database:
     @staticmethod
     async def increment_download(content_type: str, content_id: int):
         try:
-            async with aiosqlite.connect(DB_PATH极) as db:
+            async with aiosqlite.connect(DB_PATH) as db:
                 if content_type == 'movie':
                     await db.execute("UPDATE movies SET downloads = downloads + 1 WHERE id = ?", (content_id,))
                 elif content_type == 'episode':
-                    await db.execute("UPDATE episodes极 SET downloads = downloads + 1 WHERE id = ?", (content_id,))
+                    await db.execute("UPDATE episodes SET downloads = downloads + 1 WHERE id = ?", (content_id,))
                 await db.commit()
         except Exception as e:
             logger.error(f"Error incrementing download: {e}")
@@ -490,7 +490,7 @@ class Database:
                 cursor = await db.execute("SELECT COUNT(*) FROM users WHERE date(last_active) = date('now')")
                 stats['active_today'] = (await cursor.fetchone())[0]
                 
-                cursor = await db.execute("SELECT COUNT(*) FROM users WHERE has极_joined_channels = TRUE")
+                cursor = await db.execute("SELECT COUNT(*) FROM users WHERE has_joined_channels = TRUE")
                 stats['channel_members'] = (await cursor.fetchone())[0]
                 
                 # Content stats
@@ -498,9 +498,9 @@ class Database:
                 stats['total_movies'] = (await cursor.fetchone())[0]
                 
                 cursor = await db.execute("SELECT COUNT(*) FROM series")
-                stats['total_series'] = (await cursor.fetchone极())[0]
+                stats['total_series'] = (await cursor.fetchone())[0]
                 
-                cursor极 = await db.execute("SELECT COUNT(*) FROM episodes")
+                cursor = await db.execute("SELECT COUNT(*) FROM episodes")
                 stats['total_episodes'] = (await cursor.fetchone())[0]
                 
                 cursor = await db.execute("SELECT COUNT(*) FROM quality_options")
@@ -514,7 +514,7 @@ class Database:
                 stats['episode_views'] = (await cursor.fetchone())[0] or 0
                 
                 cursor = await db.execute("SELECT SUM(downloads) FROM movies")
-                stats['movie_downloads'] = (await cursor.fetchone())[极0] or 0
+                stats['movie_downloads'] = (await cursor.fetchone())[0] or 0
                 
                 cursor = await db.execute("SELECT SUM(downloads) FROM episodes")
                 stats['episode_downloads'] = (await cursor.fetchone())[0] or 0
@@ -544,7 +544,7 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_movies_main_keyboard() -> In极lineKeyboardMarkup:
+def get_movies_main_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🆕 جدیدترین‌ها", callback_data="movies_newest")],
         [InlineKeyboardButton(text="📅 بر اساس سال", callback_data="movies_by_year")],
@@ -574,7 +574,7 @@ def get_movies_keyboard(movies: List[Tuple], page: int = 0, sort_by: str = "newe
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="⏪ قبلی", callback_data=f"movies_page_{page-1}_{sort_by}_{category or ''}"))
     if len(movies) > (page+1)*5:
-        nav_buttons.append(InlineKeyboardButton(text="⏩ بعدی", callback_data=f"movies_page_{page+极1}_{sort_by}_{category or ''}"))
+        nav_buttons.append(InlineKeyboardButton(text="⏩ بعدی", callback_data=f"movies_page_{page+1}_{sort_by}_{category or ''}"))
     
     if nav_buttons:
         keyboard.append(nav_buttons)
@@ -638,7 +638,7 @@ def get_quality_keyboard(quality_options: List[Tuple], content_type: str, conten
     
     keyboard.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"show_{content_type}")])
     
-    return InlineKeyboardMarkup(inline_keyboard极=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_content_keyboard(content_type: str, content_id: int) -> InlineKeyboardMarkup:
     keyboard = [
@@ -718,7 +718,7 @@ async def check_membership_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     # In a real scenario, you would verify actual membership using Telegram API
     # For now, we'll simulate it by updating the database
-    await Database.update_user极_channel_status(user_id, True)
+    await Database.update_user_channel_status(user_id, True)
     
     is_admin = user_id in ADMINS
     await callback.message.edit_text(
@@ -804,7 +804,7 @@ async def admin_broadcast_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_message_user")
-async def admin_message_user极_callback(callback: CallbackQuery, state: F极SMContext):
+async def admin_message_user_callback(callback: CallbackQuery, state: FSMContext):
     # Cancel any previous state
     await state.clear()
     
@@ -861,7 +861,7 @@ async def process_broadcast_message(message: Message, state: FSMContext):
                 logger.error(f"Failed to send message to user {user[0]}: {e}")
                 fail_count += 1
         
-        await message极.answer(f"✅ پیام به {success_count} کاربر ارسال شد.\n❌ {fail_count} ارسال ناموفق.")
+        await message.answer(f"✅ پیام به {success_count} کاربر ارسال شد.\n❌ {fail_count} ارسال ناموفق.")
     
     await state.clear()
 
@@ -902,7 +902,7 @@ async def handle_search(message: Message, state: FSMContext):
         for i, result in enumerate(results[:5], 1):
             content_type, content_id, title, year, description, category = result
             year_text = f" ({year})" if year else ""
-            emoji = "🎬"极 if content_type == "movie" else "📺"
+            emoji = "🎬" if content_type == "movie" else "📺"
             response += f"{i}. {emoji} {title}{year_text}\n"
         
         await message.answer(response)
@@ -925,7 +925,7 @@ async def download_quality_callback(callback: CallbackQuery, state: FSMContext):
     
     data = callback.data.split('_')
     content_type = data[1]
-    content_id =极 int(data[2])
+    content_id = int(data[2])
     quality_id = int(data[3])
     
     # Get the specific quality option
@@ -955,7 +955,7 @@ async def get_content_callback(callback: CallbackQuery, state: FSMContext):
     if not await check_channel_membership(user_id):
         await callback.message.answer(
             "❌ برای دانلود باید در کانال‌ها عضو باشید.",
-            reply_markup=get_channel极_join_keyboard()
+            reply_markup=get_channel_join_keyboard()
         )
         await callback.answer()
         return
@@ -1005,7 +1005,7 @@ async def show_series_callback(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         "📺 سریال‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
-        reply极_markup=get_series_main_keyboard()
+        reply_markup=get_series_main_keyboard()
     )
     await callback.answer()
 
@@ -1024,14 +1024,14 @@ async def movies_newest_callback(callback: CallbackQuery, state: FSMContext):
         "🎬 جدیدترین فیلم‌ها:",
         reply_markup=get_movies_keyboard(movies, 0, "newest")
     )
-    await callback极.answer()
+    await callback.answer()
 
 @dp.callback_query(F.data == "movies_by_year")
 async def movies_by_year_callback(callback: CallbackQuery, state: FSMContext):
     # Cancel any previous state
     await state.clear()
     
-    movies = await极 Database.get_all_movies("year")
+    movies = await Database.get_all_movies("year")
     if not movies:
         await callback.message.answer("❌ هیچ فیلمی موجود نیست.")
         await callback.answer()
@@ -1091,11 +1091,11 @@ async def series_newest_callback(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         "📺 جدیدترین سریال‌ها:",
-        reply_markup=get_series_keyboard(series, 极0, "newest")
+        reply_markup=get_series_keyboard(series, 0, "newest")
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "极series_categories")
+@dp.callback_query(F.data == "series_categories")
 async def series_categories_callback(callback: CallbackQuery, state: FSMContext):
     # Cancel any previous state
     await state.clear()
@@ -1149,7 +1149,7 @@ async def series_page_callback(callback: CallbackQuery, state: FSMContext):
     # Cancel any previous state
     await state.clear()
     
-    data = callback.data.split('极')
+    data = callback.data.split('')
     page = int(data[2])
     sort_by = data[3]
     category = data[4] if len(data) > 4 and data[4] != '' else None
@@ -1184,10 +1184,10 @@ async def series_detail_callback(callback: CallbackQuery, state: FSMContext):
     series_id = int(callback.data.split('_')[1])
     series = await Database.get_series_by_id(series_id)
     if series:
-        await Database.increment_view('series', series极_id)
+        await Database.increment_view('series', series_id)
         episodes = await Database.get_episodes_by_series(series_id)
         
-        response = f"📺 {series[1]}\极n\n{series[2]}\n\n🏷️ {series[3]}"
+        response = f"📺 {series[1]}\n\n{series[2]}\n\n🏷️ {series[3]}"
         if series[7]:  # category
             response += f"\n📂 دسته‌بندی: {series[7]}"
         
@@ -1318,7 +1318,7 @@ async def process_series_metadata(message: Message, state: FSMContext):
         data = await state.get_data()
         parts = message.text.split('|')
         if len(parts) < 3:
-            await message极.answer("❌ فرمت وارد شده صحیح نیست. لطفا از فرمت گفته شده استفاده کنید.")
+            await message.answer("❌ فرمت وارد شده صحیح نیست. لطفا از فرمت گفته شده استفاده کنید.")
             return
         
         title = parts[0].strip()
@@ -1372,10 +1372,10 @@ async def process_season_metadata(message: Message, state: FSMContext):
 
 # Episode metadata handler
 @dp.message(UploadStates.waiting_for_episode_metadata)
-async def process_episode极_metadata(message: Message, state: FSMContext):
+async def process_episode_metadata(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
-极        parts = message.text.split('|')
+        parts = message.text.split('|')
         episode_number = int(parts[0].strip())
         title = parts[1].strip() if len(parts) > 1 else f"قسمت {episode_number}"
         
@@ -1387,10 +1387,10 @@ async def process_episode极_metadata(message: Message, state: FSMContext):
         
         await state.update_data(content_type='episode', content_id=episode_id)
         await message.answer(
-            "✅ اپیزود اضافه شد! حالا کیفیت‌ها را اضافه کنید:\极n"
+            "✅ اپیزود اضافه شد! حالا کیفیت‌ها را اضافه کنید:\n"
             "فرمت: کیفیت | file_id\n\n"
             "مثال:\n"
-            "1080极p | file_id_here\n"
+            "1080p | file_id_here\n"
             "720p | file_id_here\n\n"
             "پس از اتمام 'تمام' بنویسید."
         )
@@ -1445,7 +1445,7 @@ async def process_alternative_names(message: Message, state: FSMContext):
         if success:
             await message.answer("✅ نام جایگزین اضافه شد! نام دیگر وارد کنید یا 'خیر' بفرستید.")
         else:
-            await message.answer("❌ خطا极 در اضافه کردن نام جایگزین.")
+            await message.answer("❌ خطا در اضافه کردن نام جایگزین.")
             await state.clear()
     except Exception as e:
         await message.answer(f"❌ خطا: {e}")
@@ -1479,7 +1479,7 @@ async def handle_deep_link(message: Message, deep_link: str, is_admin: bool):
                 
                 response += "\n\n📋 لیست اپیزودها:\n"
                 for ep in episodes:
-                    response += f"• قسمت {极ep[3]}: {ep[2] or 'بدون عنوان'}\n"
+                    response += f"• قسمت {ep[3]}: {ep[2] or 'بدون عنوان'}\n"
                 
                 await message.answer(response, reply_markup=get_content_keyboard('series', series_id))
             else:
