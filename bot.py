@@ -32,12 +32,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "8417638218:AAGfO3ubY0ruAVsoF9-stdUM9U7nLDvTXg4"
-ADMINS = [123661460]
+BOT_TOKEN = "YOUR_ACTUAL_BOT_TOKEN_HERE"
+ADMINS = [123456789]
 DB_PATH = "media_bot.db"
 PAGE_SIZE = 10
-BOT_USERNAME = "bdgfilm_bot"
-REQUIRED_CHANNELS = ["@booodgeh"]  
+BOT_USERNAME = "your_bot_username"
+REQUIRED_CHANNELS = ["@channel1", "@channel2"]  # Replace with your channel usernames
 
 # Initialize bot and dispatcher
 try:
@@ -148,7 +148,7 @@ async def init_database():
                     content_type TEXT NOT NULL,
                     content_id INTEGER NOT NULL,
                     quality TEXT NOT NULL,
-                    file_id TEXT NOT UNIQUE,
+                    file_id TEXT NOT NULL,
                     file_size INTEGER,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -255,7 +255,7 @@ class Database:
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
-                    "INSERT OR IGNORE INTO quality_options (content_type, content_id, quality, file_id, file_size) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO quality_options (content_type, content_id, quality, file_id, file_size) VALUES (?, ?, ?, ?, ?)",
                     (content_type, content_id, quality, file_id, file_size)
                 )
                 await db.commit()
@@ -669,10 +669,7 @@ async def check_channel_membership(user_id: int) -> bool:
 
 # Handlers
 @dp.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def cmd_start(message: Message):
     # Track user
     user_id = message.from_user.id
     username = message.from_user.username
@@ -711,10 +708,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(welcome_text, reply_markup=get_main_keyboard(is_admin))
 
 @dp.callback_query(F.data == "check_membership")
-async def check_membership_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def check_membership_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     # In a real scenario, you would verify actual membership using Telegram API
     # For now, we'll simulate it by updating the database
@@ -728,10 +722,7 @@ async def check_membership_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def main_menu_callback(callback: CallbackQuery):
     is_admin = callback.from_user.id in ADMINS
     await callback.message.edit_text(
         "🤖 به ربات مدیا خوش آمدید!",
@@ -740,10 +731,7 @@ async def main_menu_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_panel")
-async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def admin_panel_callback(callback: CallbackQuery):
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
@@ -755,10 +743,7 @@ async def admin_panel_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_stats")
-async def admin_stats_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def admin_stats_callback(callback: CallbackQuery):
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
@@ -792,9 +777,6 @@ async def admin_stats_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
@@ -805,9 +787,6 @@ async def admin_broadcast_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_message_user")
 async def admin_message_user_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
     if callback.from_user.id not in ADMINS:
         await callback.answer("❌ دسترسی denied")
         return
@@ -866,28 +845,16 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     await state.clear()
 
 @dp.callback_query(F.data == "search")
-async def search_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def search_callback(callback: CallbackQuery):
     await callback.message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
     await callback.answer()
 
 @dp.message(Command("search"))
-async def cmd_search(message: Message, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def cmd_search(message: Message):
     await message.answer("🔍 لطفا عبارت جستجو را وارد کنید:")
 
 @dp.message(F.text & ~F.text.startswith('/'))
-async def handle_search(message: Message, state: FSMContext):
-    # Check if we're in a state that should handle this message differently
-    current_state = await state.get_state()
-    if current_state:
-        # Let the state handler deal with this message
-        return
-    
+async def handle_search(message: Message):
     if len(message.text) < 2:
         await message.answer("❌ عبارت جستجو باید حداقل ۲ کاراکتر باشد.")
         return
@@ -910,10 +877,7 @@ async def handle_search(message: Message, state: FSMContext):
         await message.answer("❌ خطایی در جستجو رخ داد.")
 
 @dp.callback_query(F.data.startswith("download_"))
-async def download_quality_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def download_quality_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     if not await check_channel_membership(user_id):
         await callback.message.answer(
@@ -947,10 +911,7 @@ async def download_quality_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("get_"))
-async def get_content_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def get_content_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
     if not await check_channel_membership(user_id):
         await callback.message.answer(
@@ -975,10 +936,7 @@ async def get_content_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("share_"))
-async def share_content_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def share_content_callback(callback: CallbackQuery):
     data = callback.data.split('_')
     content_type = data[1]
     content_id = int(data[2])
@@ -988,10 +946,7 @@ async def share_content_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "show_movies")
-async def show_movies_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def show_movies_callback(callback: CallbackQuery):
     await callback.message.edit_text(
         "🎬 فیلم‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
         reply_markup=get_movies_main_keyboard()
@@ -999,10 +954,7 @@ async def show_movies_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "show_series")
-async def show_series_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def show_series_callback(callback: CallbackQuery):
     await callback.message.edit_text(
         "📺 سریال‌ها را بر اساس چه معیاری می‌خواهید مشاهده کنید؟",
         reply_markup=get_series_main_keyboard()
@@ -1010,10 +962,7 @@ async def show_series_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_newest")
-async def movies_newest_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movies_newest_callback(callback: CallbackQuery):
     movies = await Database.get_all_movies("newest")
     if not movies:
         await callback.message.answer("❌ هیچ فیلمی موجود نیست.")
@@ -1027,10 +976,7 @@ async def movies_newest_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_by_year")
-async def movies_by_year_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movies_by_year_callback(callback: CallbackQuery):
     movies = await Database.get_all_movies("year")
     if not movies:
         await callback.message.answer("❌ هیچ فیلمی موجود نیست.")
@@ -1044,10 +990,7 @@ async def movies_by_year_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "movies_categories")
-async def movies_categories_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movies_categories_callback(callback: CallbackQuery):
     categories = await Database.get_movie_categories()
     if not categories:
         await callback.message.answer("❌ هیچ دسته‌بندی‌ای موجود نیست.")
@@ -1061,10 +1004,7 @@ async def movies_categories_callback(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movies_category_"))
-async def movies_category_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movies_category_callback(callback: CallbackQuery):
     category = callback.data.split('_')[2]
     movies = await Database.get_all_movies("newest", category)
     if not movies:
@@ -1079,10 +1019,7 @@ async def movies_category_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "series_newest")
-async def series_newest_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def series_newest_callback(callback: CallbackQuery):
     series = await Database.get_all_series("newest")
     if not series:
         await callback.message.answer("❌ هیچ سریالی موجود نیست.")
@@ -1096,10 +1033,7 @@ async def series_newest_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "series_categories")
-async def series_categories_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def series_categories_callback(callback: CallbackQuery):
     categories = await Database.get_series_categories()
     if not categories:
         await callback.message.answer("❌ هیچ دسته‌بندی‌ای موجود نیست.")
@@ -1113,10 +1047,7 @@ async def series_categories_callback(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_category_"))
-async def series_category_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def series_category_callback(callback: CallbackQuery):
     category = callback.data.split('_')[2]
     series = await Database.get_all_series("newest", category)
     if not series:
@@ -1131,10 +1062,7 @@ async def series_category_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movies_page_"))
-async def movies_page_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movies_page_callback(callback: CallbackQuery):
     data = callback.data.split('_')
     page = int(data[2])
     sort_by = data[3]
@@ -1145,11 +1073,8 @@ async def movies_page_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_page_"))
-async def series_page_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
-    data = callback.data.split('')
+async def series_page_callback(callback: CallbackQuery):
+    data = callback.data.split('_')
     page = int(data[2])
     sort_by = data[3]
     category = data[4] if len(data) > 4 and data[4] != '' else None
@@ -1159,10 +1084,7 @@ async def series_page_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("movie_"))
-async def movie_detail_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def movie_detail_callback(callback: CallbackQuery):
     movie_id = int(callback.data.split('_')[1])
     movie = await Database.get_movie_by_id(movie_id)
     if movie:
@@ -1177,10 +1099,7 @@ async def movie_detail_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("series_"))
-async def series_detail_callback(callback: CallbackQuery, state: FSMContext):
-    # Cancel any previous state
-    await state.clear()
-    
+async def series_detail_callback(callback: CallbackQuery):
     series_id = int(callback.data.split('_')[1])
     series = await Database.get_series_by_id(series_id)
     if series:
@@ -1199,21 +1118,6 @@ async def series_detail_callback(callback: CallbackQuery, state: FSMContext):
     else:
         await callback.message.answer("❌ سریال مورد نظر یافت نشد.")
     await callback.answer()
-
-# Add movie command handler
-@dp.message(Command("addmovie"))
-async def cmd_addmovie(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS:
-        await message.answer("❌ فقط ادمین‌ها می‌توانند محتوا آپلود کنند.")
-        return
-
-    await message.answer(
-        "🎬 لطفا اطلاعات فیلم را به این فرمت وارد کنید:\n"
-        "عنوان | سال | توضیحات | تگ‌ها | دسته‌بندی (اختیاری)\n\n"
-        "مثال:\n"
-        "اینترلستلر | 2014 | فیلمی درباره سفر در فضا | علمی تخیلی,فضا,کریستوفر نولان | علمی تخیلی"
-    )
-    await state.set_state(UploadStates.waiting_for_movie_metadata)
 
 # Media upload handler
 @dp.message(F.content_type.in_({ContentType.VIDEO, ContentType.DOCUMENT}))
