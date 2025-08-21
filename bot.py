@@ -214,13 +214,15 @@ class AdminStates(StatesGroup):
     waiting_for_series_description = State()
     waiting_for_series_tags = State()
     waiting_for_series_genres = State()
+    waiting_for_series_alternative_names = State()
     
     waiting_for_season_number = State()
     waiting_for_season_title = State()
     waiting_for_season_description = State()
     
-    waiting_for_episode_title = State()
     waiting_for_episode_number = State()
+    waiting_for_episode_title = State()
+    waiting_for_episode_alternative_names = State()
     waiting_for_episode_files = State()
     
     waiting_for_edit_item = State()
@@ -285,6 +287,14 @@ def create_back_keyboard() -> ReplyKeyboardMarkup:
     """Create back button keyboard"""
     keyboard = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🔙 بازگشت")]],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def create_cancel_keyboard() -> ReplyKeyboardMarkup:
+    """Create cancel button keyboard"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ لغو")]],
         resize_keyboard=True
     )
     return keyboard
@@ -375,7 +385,7 @@ async def channel_membership_middleware(handler, event: types.Message, data: dic
         return await handler(event, data)
     
     # Skip check for certain commands
-    if event.text in ["/start", "/help"] or event.text.startswith("/start share_"):
+    if event.text in ["/start", "/help"] or event.text.startswith("/start "):
         return await handler(event, data)
     
     # Check if user has joined required channels
@@ -415,6 +425,55 @@ async def channel_membership_middleware(handler, event: types.Message, data: dic
         )
         return
 
+# Callback query middleware for channel membership
+@dp.callback_query.middleware
+async def callback_channel_membership_middleware(handler, event: types.CallbackQuery, data: dict):
+    # Skip check for admins
+    if await is_admin(event.from_user.id):
+        return await handler(event, data)
+    
+    # Skip check for membership check callback
+    if event.data == "check_membership":
+        return await handler(event, data)
+    
+    # Check if user has joined required channels
+    user_id = event.from_user.id
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT joined_channels FROM users WHERE id = ?", (user_id,))
+        user_data = cursor.fetchone()
+        
+        if user_data and user_data['joined_channels']:
+            return await handler(event, data)
+    
+    # Check current membership status
+    is_member = await check_channel_membership(user_id)
+    
+    if is_member:
+        # Update user status in database
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET joined_channels = TRUE WHERE id = ?",
+                (user_id,)
+            )
+            conn.commit()
+        return await handler(event, data)
+    else:
+        # User hasn't joined all channels
+        channels_text = "\n".join([f"🔹 {channel}" for channel in REQUIRED_CHANNELS])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="عضویت در کانال ها", url=f"https://t.me/{REQUIRED_CHANNELS[0][1:]}")],
+            [InlineKeyboardButton(text="بررسی عضویت", callback_data="check_membership")]
+        ])
+        await event.message.answer(
+            f"⚠️ برای استفاده از ربات باید در کانال های زیر عضو شوید:\n\n{channels_text}\n\n"
+            "پس از عضویت، روی دکمه «بررسی عضویت» کلیک کنید.",
+            reply_markup=keyboard
+        )
+        await event.answer()
+        return
+
 # Command handlers
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -423,11 +482,11 @@ async def cmd_start(message: types.Message):
     
     # Check if this is a share link
     if len(message.text.split()) > 1:
-        share_uuid = message.text.split()[1]
+        start_param = message.text.split()[1]
         
         # Check if it's a share UUID
-        if share_uuid.startswith("share_"):
-            share_id = share_uuid[6:]
+        if start_param.startswith("share_"):
+            share_id = start_param[6:]
             
             # Check if it's a movie
             with get_db_connection() as conn:
@@ -562,17 +621,28 @@ async def check_membership_callback(callback: types.CallbackQuery):
 
 # Text message handlers
 @dp.message(F.text == "🔙 بازگشت")
-async def handle_back(message: types.Message):
+async def handle_back(message: types.Message, state: FSMContext):
     """Handle back button"""
+    await state.clear()
     if await is_admin(message.from_user.id):
         await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
     else:
         await message.answer("منوی اصلی", reply_markup=create_main_keyboard())
 
 @dp.message(F.text == "🔙 بازگشت به منوی اصلی")
-async def handle_back_to_main(message: types.Message):
+async def handle_back_to_main(message: types.Message, state: FSMContext):
     """Handle back to main menu button"""
+    await state.clear()
     await message.answer("منوی اصلی", reply_markup=create_main_keyboard())
+
+@dp.message(F.text == "❌ لغو")
+async def handle_cancel(message: types.Message, state: FSMContext):
+    """Handle cancel button"""
+    await state.clear()
+    if await is_admin(message.from_user.id):
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+    else:
+        await message.answer("منوی اصلی", reply_markup=create_main_keyboard())
 
 @dp.message(F.text == "🎬 فیلم ها")
 async def handle_movies(message: types.Message):
@@ -616,7 +686,7 @@ async def handle_add_movie(message: types.Message, state: FSMContext):
     
     await message.answer(
         "🎬 لطفا عنوان فیلم را وارد کنید:",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_movie_title)
 
@@ -629,7 +699,7 @@ async def handle_add_series(message: types.Message, state: FSMContext):
     
     await message.answer(
         "📺 لطفا عنوان سریال را وارد کنید:",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_series_title)
 
@@ -683,7 +753,7 @@ async def handle_edit_content(message: types.Message, state: FSMContext):
     
     await message.answer(
         "✏️ لطفا نام یا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_edit_item)
 
@@ -696,7 +766,7 @@ async def handle_bulk_message(message: types.Message, state: FSMContext):
     
     await message.answer(
         "📤 لطفا پیامی که می‌خواهید برای همه کاربران ارسال کنید را وارد کنید:",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_bulk_message)
 
@@ -710,10 +780,10 @@ async def handle_share_links(message: types.Message):
     # Get all movies and series
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, title, year FROM movies ORDER BY title")
+        cursor.execute("SELECT id, title, year, share_uuid FROM movies ORDER BY title")
         movies = cursor.fetchall()
         
-        cursor.execute("SELECT id, title FROM series ORDER BY title")
+        cursor.execute("SELECT id, title, share_uuid FROM series ORDER BY title")
         series_list = cursor.fetchall()
     
     if not movies and not series_list:
@@ -726,26 +796,29 @@ async def handle_share_links(message: types.Message):
     if movies:
         text += "🎬 فیلم ها:\n"
         for movie in movies:
-            share_url = f"{BASE_SHARE_URL}share_{movie['id']}"
+            share_url = f"{BASE_SHARE_URL}share_{movie['share_uuid']}"
             text += f"{movie['title']} ({movie['year']}): {share_url}\n"
         text += "\n"
     
     if series_list:
         text += "📺 سریال ها:\n"
         for series in series_list:
+            share_url = f"{BASE_SHARE_URL}share_{series['share_uuid']}"
+            text += f"{series['title']}: {share_url}\n"
+            
             # Get seasons for this series
             cursor.execute("SELECT id, season_number FROM seasons WHERE series_id = ? ORDER BY season_number", (series['id'],))
             seasons = cursor.fetchall()
             
             for season in seasons:
                 # Get episodes for this season
-                cursor.execute("SELECT id, episode_number, title FROM episodes WHERE season_id = ? ORDER BY episode_number", (season['id'],))
+                cursor.execute("SELECT id, episode_number, title, share_uuid FROM episodes WHERE season_id = ? ORDER BY episode_number", (season['id'],))
                 episodes = cursor.fetchall()
                 
                 for episode in episodes:
-                    share_url = f"{BASE_SHARE_URL}share_{episode['id']}"
+                    episode_share_url = f"{BASE_SHARE_URL}share_{episode['share_uuid']}"
                     episode_title = f" - {episode['title']}" if episode['title'] else ""
-                    text += f"{series['title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}{episode_title}: {share_url}\n"
+                    text += f"  ├─ {series['title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}{episode_title}: {episode_share_url}\n"
     
     # Split long messages
     if len(text) > 4000:
@@ -759,31 +832,51 @@ async def handle_share_links(message: types.Message):
 @dp.message(StateFilter(AdminStates.waiting_for_movie_title))
 async def handle_movie_title(message: types.Message, state: FSMContext):
     """Handle movie title input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(title=message.text)
-    await message.answer("📅 لطفا سال تولید فیلم را وارد کنید:")
+    await message.answer("📅 لطفا سال تولید فیلم را وارد کنید:", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_movie_year)
 
 @dp.message(StateFilter(AdminStates.waiting_for_movie_year))
 async def handle_movie_year(message: types.Message, state: FSMContext):
     """Handle movie year input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     if not message.text.isdigit():
-        await message.answer("⚠️ سال باید یک عدد باشد. لطفا دوباره وارد کنید:")
+        await message.answer("⚠️ سال باید یک عدد باشد. لطفا دوباره وارد کنید:", reply_markup=create_cancel_keyboard())
         return
     
     await state.update_data(year=int(message.text))
-    await message.answer("📝 لطفا توضیحات فیلم را وارد کنید:")
+    await message.answer("📝 لطفا توضیحات فیلم را وارد کنید:", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_movie_description)
 
 @dp.message(StateFilter(AdminStates.waiting_for_movie_description))
 async def handle_movie_description(message: types.Message, state: FSMContext):
     """Handle movie description input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(description=message.text)
-    await message.answer("🏷 لطفا تگ های فیلم را با کاما جدا کنید (مثلا: اکشن,ماجراجویی,علمی تخیلی):")
+    await message.answer("🏷 لطفا تگ های فیلم را با کاما جدا کنید (مثلا: اکشن,ماجراجویی,علمی تخیلی):", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_movie_tags)
 
 @dp.message(StateFilter(AdminStates.waiting_for_movie_tags))
 async def handle_movie_tags(message: types.Message, state: FSMContext):
     """Handle movie tags input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(tags=message.text)
     await message.answer("🎭 لطفا ژانرهای فیلم را انتخاب کنید:", reply_markup=create_genres_keyboard())
     await state.set_state(AdminStates.waiting_for_movie_genres)
@@ -815,13 +908,18 @@ async def handle_movie_genres(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(StateFilter(AdminStates.waiting_for_movie_genres), F.data == "confirm_genres")
 async def handle_confirm_genres(callback: types.CallbackQuery, state: FSMContext):
     """Handle genres confirmation"""
-    await callback.message.answer("🔤 لطفا نام های جایگزین فیلم را با کاما جدا کنید (در صورت وجود):")
+    await callback.message.answer("🔤 لطفا نام های جایگزین فیلم را با کاما جدا کنید (در صورت وجود):", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_alternative_names)
     await callback.answer()
 
 @dp.message(StateFilter(AdminStates.waiting_for_alternative_names))
 async def handle_movie_alternative_names(message: types.Message, state: FSMContext):
     """Handle movie alternative names input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(alternative_names=message.text)
     
     data = await state.get_data()
@@ -850,7 +948,7 @@ async def handle_movie_alternative_names(message: types.Message, state: FSMConte
     
     await message.answer(
         f"✅ فیلم «{data['title']}» با موفقیت اضافه شد. لطفا فایل های ویدیویی با کیفیت های مختلف را ارسال کنید:",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.update_data(movie_id=movie_id)
     await state.set_state(AdminStates.waiting_for_movie_files)
@@ -858,26 +956,31 @@ async def handle_movie_alternative_names(message: types.Message, state: FSMConte
 @dp.message(StateFilter(AdminStates.waiting_for_movie_files))
 async def handle_movie_files(message: types.Message, state: FSMContext):
     """Handle movie files upload"""
-    if message.text == "🔙 بازگشت":
-        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+    if message.text == "❌ لغو":
         await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
         return
     
     if not message.video:
-        await message.answer("⚠️ لطفا یک فایل ویدیویی ارسال کنید:")
+        await message.answer("⚠️ لطفا یک فایل ویدیویی ارسال کنید:", reply_markup=create_cancel_keyboard())
         return
     
     data = await state.get_data()
     movie_id = data['movie_id']
     
     # Ask for quality
-    await message.answer("📺 لطفا کیفیت این فایل را وارد کنید (مثلا: 1080p, 720p, 480p):")
+    await message.answer("📺 لطفا کیفیت این فایل را وارد کنید (مثلا: 1080p, 720p, 480p):", reply_markup=create_cancel_keyboard())
     await state.update_data(file_id=message.video.file_id, file_size=message.video.file_size, duration=message.video.duration)
     await state.set_state(AdminStates.waiting_for_quality_selection)
 
 @dp.message(StateFilter(AdminStates.waiting_for_quality_selection))
 async def handle_quality_selection(message: types.Message, state: FSMContext):
     """Handle quality selection for movie files"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     quality = message.text.strip()
     data = await state.get_data()
     movie_id = data['movie_id']
@@ -895,8 +998,8 @@ async def handle_quality_selection(message: types.Message, state: FSMContext):
         conn.commit()
     
     await message.answer(
-        f"✅ فایل با کیفیت {quality} اضافه شد. می‌توانید فایل دیگری با کیفیت متفاوت ارسال کنید یا برای اتمام از دکمه بازگشت استفاده کنید.",
-        reply_markup=create_back_keyboard()
+        f"✅ فایل با کیفیت {quality} اضافه شد. می‌توانید فایل دیگری با کیفیت متفاوت ارسال کنید یا برای اتمام از دکمه لغو استفاده کنید.",
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_movie_files)
 
@@ -904,20 +1007,35 @@ async def handle_quality_selection(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(AdminStates.waiting_for_series_title))
 async def handle_series_title(message: types.Message, state: FSMContext):
     """Handle series title input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(title=message.text)
-    await message.answer("📝 لطفا توضیحات سریال را وارد کنید:")
+    await message.answer("📝 لطفا توضیحات سریال را وارد کنید:", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_series_description)
 
 @dp.message(StateFilter(AdminStates.waiting_for_series_description))
 async def handle_series_description(message: types.Message, state: FSMContext):
     """Handle series description input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(description=message.text)
-    await message.answer("🏷 لطفا تگ های سریال را با کاما جدا کنید (مثلا: اکشن,ماجراجویی,کمدی):")
+    await message.answer("🏷 لطفا تگ های سریال را با کاما جدا کنید (مثلا: اکشن,ماجراجویی,کمدی):", reply_markup=create_cancel_keyboard())
     await state.set_state(AdminStates.waiting_for_series_tags)
 
 @dp.message(StateFilter(AdminStates.waiting_for_series_tags))
 async def handle_series_tags(message: types.Message, state: FSMContext):
     """Handle series tags input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(tags=message.text)
     await message.answer("🎭 لطفا ژانرهای سریال را انتخاب کنید:", reply_markup=create_genres_keyboard())
     await state.set_state(AdminStates.waiting_for_series_genres)
@@ -949,13 +1067,18 @@ async def handle_series_genres(callback: types.CallbackQuery, state: FSMContext)
 @dp.callback_query(StateFilter(AdminStates.waiting_for_series_genres), F.data == "confirm_series_genres")
 async def handle_confirm_series_genres(callback: types.CallbackQuery, state: FSMContext):
     """Handle series genres confirmation"""
-    await callback.message.answer("🔤 لطفا نام های جایگزین سریال را با کاما جدا کنید (در صورت وجود):")
-    await state.set_state(AdminStates.waiting_for_alternative_names)
+    await callback.message.answer("🔤 لطفا نام های جایگزین سریال را با کاما جدا کنید (در صورت وجود):", reply_markup=create_cancel_keyboard())
+    await state.set_state(AdminStates.waiting_for_series_alternative_names)
     await callback.answer()
 
-@dp.message(StateFilter(AdminStates.waiting_for_alternative_names))
+@dp.message(StateFilter(AdminStates.waiting_for_series_alternative_names))
 async def handle_series_alternative_names(message: types.Message, state: FSMContext):
     """Handle series alternative names input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     await state.update_data(alternative_names=message.text)
     
     data = await state.get_data()
@@ -983,18 +1106,157 @@ async def handle_series_alternative_names(message: types.Message, state: FSMCont
         conn.commit()
     
     await message.answer(
-        f"✅ سریال «{data['title']}» با موفقیت اضافه شد. اکنون می‌توانید فصل ها را اضافه کنید.",
-        reply_markup=create_admin_keyboard()
+        f"✅ سریال «{data['title']}» با موفقیت اضافه شد. اکنون لطفا شماره فصل را وارد کنید:",
+        reply_markup=create_cancel_keyboard()
     )
-    await state.clear()
+    await state.update_data(series_id=series_id)
+    await state.set_state(AdminStates.waiting_for_season_number)
+
+@dp.message(StateFilter(AdminStates.waiting_for_season_number))
+async def handle_season_number(message: types.Message, state: FSMContext):
+    """Handle season number input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    if not message.text.isdigit():
+        await message.answer("⚠️ شماره فصل باید یک عدد باشد. لطفا دوباره وارد کنید:", reply_markup=create_cancel_keyboard())
+        return
+    
+    await state.update_data(season_number=int(message.text))
+    await message.answer("📝 لطفا عنوان فصل را وارد کنید (اختیاری):", reply_markup=create_cancel_keyboard())
+    await state.set_state(AdminStates.waiting_for_season_title)
+
+@dp.message(StateFilter(AdminStates.waiting_for_season_title))
+async def handle_season_title(message: types.Message, state: FSMContext):
+    """Handle season title input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    await state.update_data(season_title=message.text)
+    await message.answer("📝 لطفا توضیحات فصل را وارد کنید (اختیاری):", reply_markup=create_cancel_keyboard())
+    await state.set_state(AdminStates.waiting_for_season_description)
+
+@dp.message(StateFilter(AdminStates.waiting_for_season_description))
+async def handle_season_description(message: types.Message, state: FSMContext):
+    """Handle season description input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    data = await state.get_data()
+    series_id = data['series_id']
+    
+    # Create season in database
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO seasons (series_id, season_number, title, description)
+            VALUES (?, ?, ?, ?)
+            """,
+            (series_id, data['season_number'], data.get('season_title', ''), message.text)
+        )
+        season_id = cursor.lastrowid
+        conn.commit()
+    
+    await message.answer(
+        f"✅ فصل {data['season_number']} با موفقیت اضافه شد. اکنون لطفا شماره قسمت را وارد کنید:",
+        reply_markup=create_cancel_keyboard()
+    )
+    await state.update_data(season_id=season_id)
+    await state.set_state(AdminStates.waiting_for_episode_number)
+
+@dp.message(StateFilter(AdminStates.waiting_for_episode_number))
+async def handle_episode_number(message: types.Message, state: FSMContext):
+    """Handle episode number input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    if not message.text.isdigit():
+        await message.answer("⚠️ شماره قسمت باید یک عدد باشد. لطفا دوباره وارد کنید:", reply_markup=create_cancel_keyboard())
+        return
+    
+    await state.update_data(episode_number=int(message.text))
+    await message.answer("📝 لطفا عنوان قسمت را وارد کنید (اختیاری):", reply_markup=create_cancel_keyboard())
+    await state.set_state(AdminStates.waiting_for_episode_title)
+
+@dp.message(StateFilter(AdminStates.waiting_for_episode_title))
+async def handle_episode_title(message: types.Message, state: FSMContext):
+    """Handle episode title input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    await state.update_data(episode_title=message.text)
+    await message.answer("🔤 لطفا نام های جایگزین قسمت را با کاما جدا کنید (در صورت وجود):", reply_markup=create_cancel_keyboard())
+    await state.set_state(AdminStates.waiting_for_episode_alternative_names)
+
+@dp.message(StateFilter(AdminStates.waiting_for_episode_alternative_names))
+async def handle_episode_alternative_names(message: types.Message, state: FSMContext):
+    """Handle episode alternative names input"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    data = await state.get_data()
+    season_id = data['season_id']
+    
+    # Create episode in database
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO episodes (season_id, episode_number, title, alternative_names, share_uuid)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (season_id, data['episode_number'], data.get('episode_title', ''), message.text, generate_share_uuid())
+        )
+        episode_id = cursor.lastrowid
+        conn.commit()
+    
+    await message.answer(
+        f"✅ قسمت {data['episode_number']} با موفقیت اضافه شد. لطفا فایل های ویدیویی با کیفیت های مختلف را ارسال کنید:",
+        reply_markup=create_cancel_keyboard()
+    )
+    await state.update_data(episode_id=episode_id)
+    await state.set_state(AdminStates.waiting_for_episode_files)
+
+@dp.message(StateFilter(AdminStates.waiting_for_episode_files))
+async def handle_episode_files(message: types.Message, state: FSMContext):
+    """Handle episode files upload"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
+    if not message.video:
+        await message.answer("⚠️ لطفا یک فایل ویدیویی ارسال کنید:", reply_markup=create_cancel_keyboard())
+        return
+    
+    data = await state.get_data()
+    episode_id = data['episode_id']
+    
+    # Ask for quality
+    await message.answer("📺 لطفا کیفیت این فایل را وارد کنید (مثلا: 1080p, 720p, 480p):", reply_markup=create_cancel_keyboard())
+    await state.update_data(file_id=message.video.file_id, file_size=message.video.file_size, duration=message.video.duration)
+    await state.set_state(AdminStates.waiting_for_quality_selection)
 
 # Bulk message handling
 @dp.message(StateFilter(AdminStates.waiting_for_bulk_message))
 async def handle_bulk_message_text(message: types.Message, state: FSMContext):
     """Handle bulk message text"""
-    if message.text == "🔙 بازگشت":
-        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+    if message.text == "❌ لغو":
         await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
         return
     
     # Get all users
@@ -1026,6 +1288,11 @@ async def handle_bulk_message_text(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(AdminStates.waiting_for_edit_item))
 async def handle_edit_item(message: types.Message, state: FSMContext):
     """Handle item name or ID input for editing"""
+    if message.text == "❌ لغو":
+        await state.clear()
+        await message.answer("🛠 پنل مدیریت", reply_markup=create_admin_keyboard())
+        return
+    
     search_term = message.text
     
     # Check if item exists in movies
@@ -1044,7 +1311,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
                     [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="ژانرها")],
-                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1070,7 +1337,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
                     [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های جایگزین")],
                     [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
-                    [KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1098,7 +1365,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
                     [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="افزودن فایل")],
-                    [KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1115,8 +1382,8 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(AdminStates.waiting_for_edit_field))
 async def handle_edit_field(message: types.Message, state: FSMContext):
     """Handle field selection for editing"""
-    if message.text == "🔙 بازگشت":
-        await message.answer("✏️ لطفا نام یا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:", reply_markup=create_back_keyboard())
+    if message.text == "❌ لغو":
+        await message.answer("✏️ لطفا نام یا ID آیتمی که می‌خواهید ویرایش کنید را وارد کنید:", reply_markup=create_cancel_keyboard())
         await state.set_state(AdminStates.waiting_for_edit_item)
         return
     
@@ -1127,13 +1394,13 @@ async def handle_edit_field(message: types.Message, state: FSMContext):
         if item_type == "movie":
             await message.answer(
                 "🎬 لطفا فایل ویدیویی جدید را ارسال کنید:",
-                reply_markup=create_back_keyboard()
+                reply_markup=create_cancel_keyboard()
             )
             await state.set_state(AdminStates.waiting_for_movie_files)
         elif item_type == "episode":
             await message.answer(
                 "📺 لطفا فایل ویدیویی جدید را ارسال کنید:",
-                reply_markup=create_back_keyboard()
+                reply_markup=create_cancel_keyboard()
             )
             await state.set_state(AdminStates.waiting_for_episode_files)
         return
@@ -1141,8 +1408,8 @@ async def handle_edit_field(message: types.Message, state: FSMContext):
     if message.text == "افزودن فصل" and item_type == "series":
         await message.answer(
             "📺 لطفا شماره فصل جدید را وارد کنید:",
-            reply_markup=create_back_keyboard()
-        )
+            reply_markup=create_cancel_keyboard()
+            )
         await state.set_state(AdminStates.waiting_for_season_number)
         return
     
@@ -1169,14 +1436,14 @@ async def handle_edit_field(message: types.Message, state: FSMContext):
     current_value = data['item_data'].get(field, "وجود ندارد")
     await message.answer(
         f"✏️ لطفا مقدار جدید را وارد کنید:\n\nمقدار فعلی: {current_value}",
-        reply_markup=create_back_keyboard()
+        reply_markup=create_cancel_keyboard()
     )
     await state.set_state(AdminStates.waiting_for_edit_value)
 
 @dp.message(StateFilter(AdminStates.waiting_for_edit_value))
 async def handle_edit_value(message: types.Message, state: FSMContext):
     """Handle new value input and update database"""
-    if message.text == "🔙 بازگشت":
+    if message.text == "❌ لغو":
         data = await state.get_data()
         if data['item_type'] == "movie":
             keyboard = ReplyKeyboardMarkup(
@@ -1184,7 +1451,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
                     [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="ژانرها")],
-                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1194,7 +1461,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
                     [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های جایگزین")],
                     [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
-                    [KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1203,7 +1470,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
                     [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="افزودن فایل")],
-                    [KeyboardButton(text="🔙 بازگشت")]
+                    [KeyboardButton(text="❌ لغو")]
                 ],
                 resize_keyboard=True
             )
@@ -1237,26 +1504,26 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
 
 # Search functionality
 @dp.message(F.text)
-async def handle_search_query(message: types.Message):
+async def handle_search_query(message: types.Message, state: FSMContext):
     """Handle search queries"""
     query = message.text.strip()
     
     # If it's a command or button text, skip
-    if query.startswith('/') or query in ["🎬 فیلم ها", "📺 سریال ها", "🔍 جستجو", "ℹ️ راهنما"]:
+    if query.startswith('/') or query in ["🎬 فیلم ها", "📺 سریال ها", "🔍 جستجو", "ℹ️ راهنما", "🔙 بازگشت", "❌ لغو"]:
         return
     
     # Search in movies and series
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        # Search in movies
+        # Search in movies with case-insensitive matching
         cursor.execute(
             """
             SELECT id, title, year, 'movie' as type FROM movies 
-            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ? OR description LIKE ?
+            WHERE LOWER(title) LIKE LOWER(?) OR LOWER(alternative_names) LIKE LOWER(?) OR LOWER(tags) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?)
             UNION
             SELECT id, title, NULL as year, 'series' as type FROM series 
-            WHERE title LIKE ? OR alternative_names LIKE ? OR tags LIKE ? OR description LIKE ?
+            WHERE LOWER(title) LIKE LOWER(?) OR LOWER(alternative_names) LIKE LOWER(?) OR LOWER(tags) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?)
             LIMIT 20
             """,
             (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", 
@@ -1447,14 +1714,14 @@ async def handle_movie_callback(callback: types.CallbackQuery):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM movies WHERE id = ?", (movie_id,))
         movie = cursor.fetchone()
-    
-    if not movie:
-        await callback.answer("⚠️ فیلم یافت نشد.")
-        return
-    
-    # Check if movie has multiple qualities
-    cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM movie_files WHERE movie_id = ?", (movie_id,))
-    quality_count = cursor.fetchone()['quality_count']
+        
+        if not movie:
+            await callback.answer("⚠️ فیلم یافت نشد.")
+            return
+        
+        # Check if movie has multiple qualities
+        cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM movie_files WHERE movie_id = ?", (movie_id,))
+        quality_count = cursor.fetchone()['quality_count']
     
     # Create message text
     text = f"🎬 {movie['title']} ({movie['year']})\n\n"
@@ -1513,13 +1780,13 @@ async def handle_series_callback(callback: types.CallbackQuery):
         cursor.execute("SELECT * FROM series WHERE id = ?", (series_id,))
         series = cursor.fetchone()
         
+        if not series:
+            await callback.answer("⚠️ سریال یافت نشد.")
+            return
+        
         # Get seasons for this series
         cursor.execute("SELECT * FROM seasons WHERE series_id = ? ORDER BY season_number", (series_id,))
         seasons = cursor.fetchall()
-    
-    if not series:
-        await callback.answer("⚠️ سریال یافت نشد.")
-        return
     
     # Create message text
     text = f"📺 {series['title']}\n\n"
@@ -1638,10 +1905,10 @@ async def handle_episode_callback(callback: types.CallbackQuery):
         # Get season and series info
         cursor.execute("SELECT s.*, se.title as series_title FROM seasons s JOIN series se ON s.series_id = se.id WHERE s.id = ?", (episode['season_id'],))
         season = cursor.fetchone()
-    
-    # Check if episode has multiple qualities
-    cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM episode_files WHERE episode_id = ?", (episode_id,))
-    quality_count = cursor.fetchone()['quality_count']
+        
+        # Check if episode has multiple qualities
+        cursor.execute("SELECT COUNT(DISTINCT quality) as quality_count FROM episode_files WHERE episode_id = ?", (episode_id,))
+        quality_count = cursor.fetchone()['quality_count']
     
     text = f"📺 {season['series_title']} - فصل {season['season_number']} - قسمت {episode['episode_number']}\n\n"
     if episode['title']:
@@ -1651,7 +1918,7 @@ async def handle_episode_callback(callback: types.CallbackQuery):
         text += "📺 لطفا کیفیت مورد نظر را انتخاب کنید:"
         keyboard = create_quality_keyboard("episode", episode_id)
     else:
-        text += "👇 برای دریافت لینک دانلود از دکمة زیر استفاده کنید:"
+        text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬇️ دانلود اپیزود", callback_data=f"download_episode_{episode_id}")]
         ])
