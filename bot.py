@@ -208,14 +208,12 @@ class AdminStates(StatesGroup):
     waiting_for_movie_tags = State()
     waiting_for_movie_genres = State()
     waiting_for_alternative_names = State()
-    waiting_for_movie_poster = State()
     waiting_for_movie_files = State()
     
     waiting_for_series_title = State()
     waiting_for_series_description = State()
     waiting_for_series_tags = State()
     waiting_for_series_genres = State()
-    waiting_for_series_poster = State()
     
     waiting_for_season_number = State()
     waiting_for_season_title = State()
@@ -825,20 +823,6 @@ async def handle_confirm_genres(callback: types.CallbackQuery, state: FSMContext
 async def handle_movie_alternative_names(message: types.Message, state: FSMContext):
     """Handle movie alternative names input"""
     await state.update_data(alternative_names=message.text)
-    await message.answer("🖼 لطفا پوستر فیلم را ارسال کنید (اختیاری - برای رد این مرحله از دکمه بازگشت استفاده کنید):")
-    await state.set_state(AdminStates.waiting_for_movie_poster)
-
-@dp.message(StateFilter(AdminStates.waiting_for_movie_poster))
-async def handle_movie_poster(message: types.Message, state: FSMContext):
-    """Handle movie poster input"""
-    if message.text == "🔙 بازگشت":
-        # User wants to skip poster
-        await state.update_data(poster_file_id=None)
-    elif message.photo:
-        await state.update_data(poster_file_id=message.photo[-1].file_id)
-    else:
-        await message.answer("⚠️ لطفا یک تصویر ارسال کنید یا از دکمه بازگشت استفاده کنید:")
-        return
     
     data = await state.get_data()
     
@@ -847,11 +831,11 @@ async def handle_movie_poster(message: types.Message, state: FSMContext):
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO movies (title, year, description, tags, alternative_names, poster_file_id, share_uuid)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO movies (title, year, description, tags, alternative_names, share_uuid)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (data['title'], data['year'], data['description'], data['tags'], 
-             data.get('alternative_names', ''), data.get('poster_file_id'), generate_share_uuid())
+             data.get('alternative_names', ''), generate_share_uuid())
         )
         movie_id = cursor.lastrowid
         
@@ -973,20 +957,6 @@ async def handle_confirm_series_genres(callback: types.CallbackQuery, state: FSM
 async def handle_series_alternative_names(message: types.Message, state: FSMContext):
     """Handle series alternative names input"""
     await state.update_data(alternative_names=message.text)
-    await message.answer("🖼 لطفا پوستر سریال را ارسال کنید (اختیاری - برای رد این مرحله از دکمه بازگشت استفاده کنید):")
-    await state.set_state(AdminStates.waiting_for_series_poster)
-
-@dp.message(StateFilter(AdminStates.waiting_for_series_poster))
-async def handle_series_poster(message: types.Message, state: FSMContext):
-    """Handle series poster input"""
-    if message.text == "🔙 بازگشت":
-        # User wants to skip poster
-        await state.update_data(poster_file_id=None)
-    elif message.photo:
-        await state.update_data(poster_file_id=message.photo[-1].file_id)
-    else:
-        await message.answer("⚠️ لطفا یک تصویر ارسال کنید یا از دکمه بازگشت استفاده کنید:")
-        return
     
     data = await state.get_data()
     
@@ -995,11 +965,11 @@ async def handle_series_poster(message: types.Message, state: FSMContext):
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO series (title, description, tags, alternative_names, poster_file_id, share_uuid)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO series (title, description, tags, alternative_names, share_uuid)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (data['title'], data['description'], data['tags'], 
-             data.get('alternative_names', ''), data.get('poster_file_id'), generate_share_uuid())
+             data.get('alternative_names', ''), generate_share_uuid())
         )
         series_id = cursor.lastrowid
         
@@ -1681,7 +1651,7 @@ async def handle_episode_callback(callback: types.CallbackQuery):
         text += "📺 لطفا کیفیت مورد نظر را انتخاب کنید:"
         keyboard = create_quality_keyboard("episode", episode_id)
     else:
-        text += "👇 برای دریافت لینک دانلود از دکمه زیر استفاده کنید:"
+        text += "👇 برای دریافت لینک دانلود از دکمة زیر استفاده کنید:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬇️ دانلود اپیزود", callback_data=f"download_episode_{episode_id}")]
         ])
