@@ -32,12 +32,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "YOUR_ACTUAL_BOT_TOKEN_HERE"
-ADMINS = [123456789]
+BOT_TOKEN = "8417638218:AAGfO3ubY0ruAVsoF9-stdUM9U7nLDvTXg4"
+ADMINS = [123661460]
 DB_PATH = "media_bot.db"
 PAGE_SIZE = 10
-BOT_USERNAME = "your_bot_username"
-REQUIRED_CHANNELS = ["@channel1", "@channel2"]  # Replace with your channel usernames
+BOT_USERNAME = "bdgfilm_bot"
+REQUIRED_CHANNELS = ["@booodgeh"]  
 
 # Initialize bot and dispatcher
 try:
