@@ -817,7 +817,7 @@ async def handle_movie_genres(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(StateFilter(AdminStates.waiting_for_movie_genres), F.data == "confirm_genres")
 async def handle_confirm_genres(callback: types.CallbackQuery, state: FSMContext):
     """Handle genres confirmation"""
-    await callback.message.answer("🔤 لطفا نام های替代 فیلم را با کاما جدا کنید (در صورت وجود):")
+    await callback.message.answer("🔤 لطفا نام های جایگزین فیلم را با کاما جدا کنید (در صورت وجود):")
     await state.set_state(AdminStates.waiting_for_alternative_names)
     await callback.answer()
 
@@ -825,14 +825,20 @@ async def handle_confirm_genres(callback: types.CallbackQuery, state: FSMContext
 async def handle_movie_alternative_names(message: types.Message, state: FSMContext):
     """Handle movie alternative names input"""
     await state.update_data(alternative_names=message.text)
-    await message.answer("🖼 لطفا پوستر فیلم را ارسال کنید (اختیاری):")
+    await message.answer("🖼 لطفا پوستر فیلم را ارسال کنید (اختیاری - برای رد این مرحله از دکمه بازگشت استفاده کنید):")
     await state.set_state(AdminStates.waiting_for_movie_poster)
 
-@dp.message(StateFilter(AdminStates.waiting_for_movie_poster), F.photo | F.text)
+@dp.message(StateFilter(AdminStates.waiting_for_movie_poster))
 async def handle_movie_poster(message: types.Message, state: FSMContext):
     """Handle movie poster input"""
-    if message.photo:
+    if message.text == "🔙 بازگشت":
+        # User wants to skip poster
+        await state.update_data(poster_file_id=None)
+    elif message.photo:
         await state.update_data(poster_file_id=message.photo[-1].file_id)
+    else:
+        await message.answer("⚠️ لطفا یک تصویر ارسال کنید یا از دکمه بازگشت استفاده کنید:")
+        return
     
     data = await state.get_data()
     
@@ -865,7 +871,7 @@ async def handle_movie_poster(message: types.Message, state: FSMContext):
     await state.update_data(movie_id=movie_id)
     await state.set_state(AdminStates.waiting_for_movie_files)
 
-@dp.message(StateFilter(AdminStates.waiting_for_movie_files), F.video | F.text)
+@dp.message(StateFilter(AdminStates.waiting_for_movie_files))
 async def handle_movie_files(message: types.Message, state: FSMContext):
     """Handle movie files upload"""
     if message.text == "🔙 بازگشت":
@@ -959,7 +965,7 @@ async def handle_series_genres(callback: types.CallbackQuery, state: FSMContext)
 @dp.callback_query(StateFilter(AdminStates.waiting_for_series_genres), F.data == "confirm_series_genres")
 async def handle_confirm_series_genres(callback: types.CallbackQuery, state: FSMContext):
     """Handle series genres confirmation"""
-    await callback.message.answer("🔤 لطفا نام های替代 سریال را با کاما جدا کنید (در صورت وجود):")
+    await callback.message.answer("🔤 لطفا نام های جایگزین سریال را با کاما جدا کنید (در صورت وجود):")
     await state.set_state(AdminStates.waiting_for_alternative_names)
     await callback.answer()
 
@@ -967,14 +973,20 @@ async def handle_confirm_series_genres(callback: types.CallbackQuery, state: FSM
 async def handle_series_alternative_names(message: types.Message, state: FSMContext):
     """Handle series alternative names input"""
     await state.update_data(alternative_names=message.text)
-    await message.answer("🖼 لطفا پوستر سریال را ارسال کنید (اختیاری):")
+    await message.answer("🖼 لطفا پوستر سریال را ارسال کنید (اختیاری - برای رد این مرحله از دکمه بازگشت استفاده کنید):")
     await state.set_state(AdminStates.waiting_for_series_poster)
 
-@dp.message(StateFilter(AdminStates.waiting_for_series_poster), F.photo | F.text)
+@dp.message(StateFilter(AdminStates.waiting_for_series_poster))
 async def handle_series_poster(message: types.Message, state: FSMContext):
     """Handle series poster input"""
-    if message.photo:
+    if message.text == "🔙 بازگشت":
+        # User wants to skip poster
+        await state.update_data(poster_file_id=None)
+    elif message.photo:
         await state.update_data(poster_file_id=message.photo[-1].file_id)
+    else:
+        await message.answer("⚠️ لطفا یک تصویر ارسال کنید یا از دکمه بازگشت استفاده کنید:")
+        return
     
     data = await state.get_data()
     
@@ -1061,7 +1073,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
-                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="ژانرها")],
+                    [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="ژانرها")],
                     [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -1086,7 +1098,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
-                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های替代")],
+                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های جایگزین")],
                     [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
@@ -1115,7 +1127,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
-                    [KeyboardButton(text="نام های替代"), KeyboardButton(text="افزودن فایل")],
+                    [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="افزودن فایل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -1128,7 +1140,7 @@ async def handle_edit_item(message: types.Message, state: FSMContext):
             await state.set_state(AdminStates.waiting_for_edit_field)
             return
     
-    await message.answer("⚠️ آیتمی با این نام یا ID یافت نشد. لطفا دوباره尝试 کنید:")
+    await message.answer("⚠️ آیتمی با این نام یا ID یافت نشد. لطفا دوباره تلاش کنید:")
 
 @dp.message(StateFilter(AdminStates.waiting_for_edit_field))
 async def handle_edit_field(message: types.Message, state: FSMContext):
@@ -1173,7 +1185,7 @@ async def handle_edit_field(message: types.Message, state: FSMContext):
         "سال": "year",
         "توضیحات": "description",
         "تگ ها": "tags",
-        "نام های替代": "alternative_names",
+        "نام های جایگزین": "alternative_names",
         "شماره قسمت": "episode_number"
     }
     
@@ -1201,7 +1213,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="سال")],
                     [KeyboardButton(text="توضیحات"), KeyboardButton(text="تگ ها")],
-                    [KeyboardButton(text="نام هایAlternative"), KeyboardButton(text="ژانرها")],
+                    [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="ژانرها")],
                     [KeyboardButton(text="افزودن فایل"), KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -1210,7 +1222,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="توضیحات")],
-                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام هایAlternative")],
+                    [KeyboardButton(text="تگ ها"), KeyboardButton(text="نام های جایگزین")],
                     [KeyboardButton(text="ژانرها"), KeyboardButton(text="افزودن فصل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
@@ -1220,7 +1232,7 @@ async def handle_edit_value(message: types.Message, state: FSMContext):
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="عنوان"), KeyboardButton(text="شماره قسمت")],
-                    [KeyboardButton(text="نام هایAlternative"), KeyboardButton(text="افزودن فایل")],
+                    [KeyboardButton(text="نام های جایگزین"), KeyboardButton(text="افزودن فایل")],
                     [KeyboardButton(text="🔙 بازگشت")]
                 ],
                 resize_keyboard=True
@@ -1788,9 +1800,9 @@ async def error_handler(update: types.Update, exception: Exception):
     # Try to send a message to the user if possible
     try:
         if update.message:
-            await update.message.answer("⚠️ خطایی رخ داده است. لطفا دوباره尝试 کنید.")
+            await update.message.answer("⚠️ خطایی رخ داده است. لطفا دوباره تلاش کنید.")
         elif update.callback_query:
-            await update.callback_query.message.answer("⚠️ خطایی رخ داده است. لطفا دوباره尝试 کنید.")
+            await update.callback_query.message.answer("⚠️ خطایی رخ داده است. لطفا دوباره تلاش کنید.")
             await update.callback_query.answer()
     except:
         pass
