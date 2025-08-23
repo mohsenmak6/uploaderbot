@@ -581,26 +581,27 @@ def admin_command(update, context):
 # === Main ===
 def main():
     load_db()
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    
+    # Create application without job queue initially
+    app = Application.builder().token(BOT_TOKEN).build()
     
     # Create backups directory if it doesn't exist
     os.makedirs("backups", exist_ok=True)
     
     # Add handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("admin", admin_command))
-    dp.add_handler(CommandHandler("skip", skip_caption))
-    dp.add_handler(CommandHandler("backup", manual_backup))
-    dp.add_handler(CommandHandler("set_backup_time", set_backup_time))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("skip", skip_caption))
+    app.add_handler(CommandHandler("backup", manual_backup))
+    app.add_handler(CommandHandler("set_backup_time", set_backup_time))
     
-    dp.add_handler(MessageHandler(
-        Filters.document | Filters.video | Filters.audio | Filters.photo, 
+    app.add_handler(MessageHandler(
+        filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO, 
         handle_file
     ))
     
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-    dp.add_handler(CallbackQueryHandler(handle_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CallbackQueryHandler(handle_button))
     
     # Start the scheduler for nightly backups
     hour, minute = map(int, BACKUP_TIME.split(':'))
@@ -608,15 +609,15 @@ def main():
         send_backup_to_admin,
         CronTrigger(hour=hour, minute=minute),
         id='nightly_backup',
-        args=[dp]
+        args=[app]
     )
     scheduler.start()
     
     print("✅ Bot is running with automated backup system...")
     print(f"✅ Backups will be sent daily at {BACKUP_TIME}")
     
-    updater.start_polling()
-    updater.idle()
+    # Run the application
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
