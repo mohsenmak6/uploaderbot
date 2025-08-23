@@ -1,8 +1,10 @@
 # utils.py
 import re
-from typing import Union
+import logging
 from aiogram import types
 from config import REQUIRED_CHANNELS
+
+logger = logging.getLogger(__name__)
 
 async def check_channels_membership(user_id: int, bot):
     for channel in REQUIRED_CHANNELS:
@@ -11,12 +13,11 @@ async def check_channels_membership(user_id: int, bot):
             if member.status in ['left', 'kicked']:
                 return False
         except Exception as e:
-            print(f"Error checking channel membership: {e}")
+            logger.error(f"Error checking channel membership for {channel}: {e}")
             return False
     return True
 
 def extract_episode_info(text: str):
-    # Extract season and episode numbers from text
     patterns = [
         r"S(\d+)E(\d+)",
         r"Season[\s_]?(\d+)[\s_]?Episode[\s_]?(\d+)",
@@ -32,7 +33,6 @@ def extract_episode_info(text: str):
     return None, None
 
 def parse_movie_info(text: str):
-    # Parse movie info from text in format: title|year|description|tags
     parts = text.split('|')
     data = {}
     
@@ -51,7 +51,6 @@ def parse_movie_info(text: str):
     return data
 
 def parse_series_info(text: str):
-    # Parse series info from text in format: title|description|tags
     parts = text.split('|')
     data = {}
     
@@ -65,7 +64,6 @@ def parse_series_info(text: str):
     return data
 
 def parse_season_info(text: str):
-    # Parse season info from text in format: series_id|season_number|title
     parts = text.split('|')
     data = {}
     
@@ -85,7 +83,6 @@ def parse_season_info(text: str):
     return data
 
 def parse_episode_info(text: str):
-    # Parse episode info from text in format: season_id|episode_number|title
     parts = text.split('|')
     data = {}
     
@@ -106,26 +103,26 @@ def parse_episode_info(text: str):
 
 def format_movie_info(movie):
     text = f"🎬 <b>{movie['title']}</b>"
-    if movie['year']:
+    if movie.get('year'):
         text += f" ({movie['year']})"
-    if movie['description']:
+    if movie.get('description'):
         text += f"\n\n📝 {movie['description']}"
-    if movie['tags']:
+    if movie.get('tags'):
         text += f"\n\n🏷️ تگ ها: {movie['tags']}"
-    if movie['alternative_names']:
+    if movie.get('alternative_names'):
         text += f"\n\n🔤 نام های دیگر: {movie['alternative_names']}"
-    if movie['quality']:
+    if movie.get('quality'):
         text += f"\n\n📊 کیفیت: {movie['quality']}"
     
     return text
 
 def format_series_info(series):
     text = f"📺 <b>{series['title']}</b>"
-    if series['description']:
+    if series.get('description'):
         text += f"\n\n📝 {series['description']}"
-    if series['tags']:
+    if series.get('tags'):
         text += f"\n\n🏷️ تگ ها: {series['tags']}"
-    if series['alternative_names']:
+    if series.get('alternative_names'):
         text += f"\n\n🔤 نام های دیگر: {series['alternative_names']}"
     
     return text
@@ -136,22 +133,21 @@ def format_episode_info(episode, season=None, series=None):
         text += f"📺 <b>{series['title']}</b>\n"
     if season:
         text += f"فصل {season['season_number']}"
-        if season['title']:
+        if season.get('title'):
             text += f" - {season['title']}"
         text += "\n"
     
     text += f"🎞 قسمت {episode['episode_number']}"
-    if episode['title']:
+    if episode.get('title'):
         text += f" - {episode['title']}"
     
-    if episode['alternative_names']:
+    if episode.get('alternative_names'):
         text += f"\n\n🔤 نام های دیگر: {episode['alternative_names']}"
-    if episode['quality']:
+    if episode.get('quality'):
         text += f"\n\n📊 کیفیت: {episode['quality']}"
     
     return text
 
 def escape_markdown(text: str) -> str:
-    # Escape special MarkdownV2 characters
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
