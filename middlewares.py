@@ -1,9 +1,12 @@
 # middlewares.py
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from typing import Callable, Dict, Any, Awaitable
-from database import add_user, update_user_channels_status, get_user
+from database import add_user, update_user_channels_status
 from utils import check_channels_membership
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ChannelCheckMiddleware(BaseMiddleware):
     async def __call__(
@@ -12,8 +15,8 @@ class ChannelCheckMiddleware(BaseMiddleware):
         event: Message,
         data: Dict[str, Any]
     ) -> Any:
-        # Skip channel check for admins
-        if event.from_user.id in data['config'].ADMINS:
+        # Skip channel check for commands and for admins
+        if event.text and (event.text.startswith('/') or event.from_user.id in data['config'].ADMINS):
             return await handler(event, data)
         
         # Check if user has joined required channels
