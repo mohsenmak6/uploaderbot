@@ -1,9 +1,8 @@
-import logging, json, random, string, os, shutil, asyncio
+import logging, json, random, string, re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from telegram.constants import ParseMode
 
 # === Config ===
 BOT_TOKEN = "8417638218:AAGfO3ubY0ruAVsoF9-stdUM9U7nLDvTXg4"
@@ -12,7 +11,6 @@ REQUIRED_CHANNELS = ["@booodgeh"]  # کانال‌هایی که عضویت اج�
 FILES_DB_PATH = "files_db.json"
 KEYS_DB_PATH = "keys_db.json"
 USERS_DB_PATH = "users_db.json"
-BACKUP_TIME = "02:00"  # Backup time (2 AM)
 
 # === Data ===
 FILES_DB = {}     # {file_id: {"name": ..., "caption": ..., "downloads": int, "date": ...}}
@@ -25,9 +23,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# === Scheduler for automated backups ===
-scheduler = AsyncIOScheduler()
 
 # === Helpers ===
 def generate_key(length=8):
@@ -70,11 +65,11 @@ def record_download(user_id, file_id):
 def get_admin_keyboard():
     return ReplyKeyboardMarkup([
         ["📊 آمار ربات", "📂 مدیریت فایل‌ها"],
-        ["📢 ارسال پیام به همه", "🔄 به روزرسانی دیتابیس"],
-        ["💾 درخواست پشتیبان", "⏰ تنظیم زمان پشتیبان"]
+        ["📢 ارسال پیام به همه", "🔄 به روزرسانی دیتابیس"]
     ], resize_keyboard=True)
 
 def format_file_info(file_id, file_data, bot_username):
+    # Find the key for this file
     key = None
     for k, v in FILE_KEYS.items():
         if v == file_id:
@@ -92,130 +87,12 @@ def format_file_info(file_id, file_data, bot_username):
         )
     return f"📁 نام فایل: {file_data.get('name', 'نامشخص')}\n📝 کپشن: {file_data.get('caption', 'بدون کپشن')}\n📥 تعداد دانلود: {file_data.get('downloads', 0)}\n📅 تاریخ آپلود: {file_data.get('date', 'نامشخص')}"
 
-# === Backup Functions ===
-async def create_backup():
-    """Create a backup of all database files"""
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = f"backups/backup_{timestamp}"
-        
-        # Create backup directory
-        os.makedirs(backup_dir, exist_ok=True)
-        
-        # Copy database files
-        for file_path in [FILES_DB_PATH, KEYS_DB_PATH, USERS_DB_PATH]:
-            if os.path.exists(file_path):
-                shutil.copy2(file_path, backup_dir)
-        
-        # Create a zip file
-        zip_path = f"backups/backup_{timestamp}.zip"
-        shutil.make_archive(f"backups/backup_{timestamp}", 'zip', backup_dir)
-        
-        # Clean up
-        shutil.rmtree(backup_dir)
-        
-        return zip_path
-    except Exception as e:
-        logger.error(f"Backup creation error: {e}")
-        return None
-
-async def send_backup_to_admin(context: ContextTypes.DEFAULT_TYPE):
-    """Send backup files to admin"""
-    try:
-        # Ensure backups directory exists
-        os.makedirs("backups", exist_ok=True)
-        
-        backup_path = await create_backup()
-        if backup_path and os.path.exists(backup_path):
-            with open(backup_path, 'rb') as backup_file:
-                await context.bot.send_document(
-                    chat_id=ADMIN_ID,
-                    document=backup_file,
-                    caption=f"📦 پشتیبان خودکار - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                           f"📁 فایل‌ها: {len(FILES_DB)}\n"
-                           f"👥 کاربران: {len(USERS_DB)}\n"
-                           f"📥 کل دانلودها: {sum(f.get('downloads', 0) for f in FILES_DB.values())}"
-                )
-            # Clean up the backup file after sending
-            os.remove(backup_path)
-            logger.info("Backup sent to admin successfully")
-        else:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text="❌ خطا در ایجاد پشتیبان - فایل پشتیبان ایجاد نشد"
-            )
-    except Exception as e:
-        logger.error(f"Error sending backup: {e}")
-        try:
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"❌ خطا در ارسال پشتیبان: {str(e)}"
-            )
-        except:
-            pass
-
-async def manual_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual backup command"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    await update.message.reply_text("🔄 در حال ایجاد پشتیبان...")
-    
-    # Ensure backups directory exists
-    os.makedirs("backups", exist_ok=True)
-    
-    backup_path = await create_backup()
-    
-    if backup_path and os.path.exists(backup_path):
-        with open(backup_path, 'rb') as backup_file:
-            await context.bot.send_document(
-                chat_id=ADMIN_ID,
-                document=backup_file,
-                caption=f"📦 پشتیبان دستی - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-        # Clean up
-        os.remove(backup_path)
-        await update.message.reply_text("✅ پشتیبان با موفقیت ارسال شد")
-    else:
-        await update.message.reply_text("❌ خطا در ایجاد پشتیبان")
-
-async def set_backup_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set backup time command"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    if not context.args:
-        await update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
-        return
-    
-    try:
-        new_time = context.args[0]
-        # Validate time format
-        datetime.strptime(new_time, "%H:%M")
-        
-        # Update backup time
-        global BACKUP_TIME
-        BACKUP_TIME = new_time
-        
-        # Reschedule the job
-        scheduler.remove_job('nightly_backup')
-        hour, minute = map(int, new_time.split(':'))
-        scheduler.add_job(
-            send_backup_to_admin,
-            CronTrigger(hour=hour, minute=minute),
-            id='nightly_backup',
-            args=[context]
-        )
-        
-        await update.message.reply_text(f"✅ زمان پشتیبان‌گیری به {new_time} تنظیم شد")
-    except ValueError:
-        await update.message.reply_text("❌ فرمت زمان نامعتبر است. لطفاً از فرمت HH:MM استفاده کنید")
-
-# === Existing Handlers ===
+# === Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now().isoformat()
 
+    # ثبت کاربر در دیتابیس
     if str(user.id) not in USERS_DB:
         USERS_DB[str(user.id)] = {"downloads": [], "first_seen": now, "last_seen": now}
     else:
@@ -240,21 +117,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_ID:
         await update.message.reply_text("سلام ادمین 👑", reply_markup=get_admin_keyboard())
     else:
-        await update.message.reply_text("سلام 👋 برای دریافت فایل روی دکمه یا لینک کلیค کنید.")
+        await update.message.reply_text("سلام 👋 برای دریافت فایل روی دکمه یا لینک کلیک کنید.")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: 
         return
 
     file = None
+    file_name = "file"
     if update.message.document:
         file = update.message.document
+        file_name = file.file_name or "document"
     elif update.message.video:
         file = update.message.video
+        file_name = "video.mp4"
     elif update.message.audio:
         file = update.message.audio
+        file_name = getattr(file, "file_name", "audio.mp3")
     elif update.message.photo:
         file = update.message.photo[-1]
+        file_name = "photo.jpg"
 
     if file:
         file_id = file.file_id
@@ -346,7 +228,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption = FILES_DB[file_id].get("caption") or f"📂 {FILES_DB[file_id]['name']}"
             await context.bot.send_document(chat_id=user_id, document=file_id, caption=caption)
             record_download(user_id, file_id)
-
+        else:
+            await query.message.reply_text("❌ فایل یافت نشد یا لینک نامعتبر است.")
+    
     elif data.startswith("edit_"):
         if user_id != ADMIN_ID:
             await query.answer("❌ فقط ادمین می‌تواند ویرایش کند!", show_alert=True)
@@ -466,14 +350,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         await query.edit_message_text(
-            f"📂 لیست فایل‌ها (صفحه {page+1} از {max_page+1}):",
+            f"📂 لیست فایل‌ها (صفحه {page+1} dari {max_page+1}):",
             reply_markup=keyboard
         )
     
     elif data.startswith("page_"):
         page = int(data.replace("page_", ""))
         context.user_data["file_list_page"] = page
-        # Call file_list again to refresh
+        # ایجاد دکمه شبیه سازی برای بازگشت به لیست فایل‌ها
+        fake_query = type('', (), {'data': 'file_list', 'edit_message_text': query.edit_message_text})()
         await handle_button(update, context)
     
     elif data == "back_to_admin":
@@ -482,7 +367,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "back_to_files":
         if user_id == ADMIN_ID:
-            # Call file_list again to refresh
+            # ایجاد دکمه شبیه سازی برای بازگشت به لیست فایل‌ها
+            fake_query = type('', (), {'data': 'file_list', 'edit_message_text': query.edit_message_text})()
             await handle_button(update, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -509,10 +395,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_db()
                 await update.message.reply_text("✅ کپشن فایل با موفقیت به روز شد!")
                 context.user_data.pop("editing_file_caption", None)
-        elif text == "💾 درخواست پشتیبان":
-            await manual_backup(update, context)
-        elif text == "⏰ تنظیم زمان پشتیبان":
-            await update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
         elif text == "📊 آمار ربات":
             total_users = len(USERS_DB)
             total_files = len(FILES_DB)
@@ -582,15 +464,10 @@ def main():
     load_db()
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Create backups directory if it doesn't exist
-    os.makedirs("backups", exist_ok=True)
-    
-    # Add handlers
+    # handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("skip", skip_caption))
-    app.add_handler(CommandHandler("backup", manual_backup))
-    app.add_handler(CommandHandler("set_backup_time", set_backup_time))
     
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO, 
@@ -600,19 +477,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_button))
     
-    # Start the scheduler for nightly backups
-    hour, minute = map(int, BACKUP_TIME.split(':'))
-    scheduler.add_job(
-        send_backup_to_admin,
-        CronTrigger(hour=hour, minute=minute),
-        id='nightly_backup',
-        args=[app]
-    )
-    scheduler.start()
-    
-    print("✅ Bot is running with automated backup system...")
-    print(f"✅ Backups will be sent daily at {BACKUP_TIME}")
-    
+    print("✅ Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
