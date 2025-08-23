@@ -1,7 +1,8 @@
 import logging, json, random, string, os, shutil, asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, Filters, CallbackContext
+from telegram.utils.helpers import escape_markdown
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -119,7 +120,7 @@ async def create_backup():
         logger.error(f"Backup creation error: {e}")
         return None
 
-async def send_backup_to_admin(context: ContextTypes.DEFAULT_TYPE):
+async def send_backup_to_admin(context):
     """Send backup files to admin"""
     try:
         # Ensure backups directory exists
@@ -154,38 +155,38 @@ async def send_backup_to_admin(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-async def manual_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def manual_backup(update, context):
     """Manual backup command"""
     if update.effective_user.id != ADMIN_ID:
         return
     
-    await update.message.reply_text("🔄 در حال ایجاد پشتیبان...")
+    update.message.reply_text("🔄 در حال ایجاد پشتیبان...")
     
     # Ensure backups directory exists
     os.makedirs("backups", exist_ok=True)
     
-    backup_path = await create_backup()
+    backup_path = asyncio.run(create_backup())
     
     if backup_path and os.path.exists(backup_path):
         with open(backup_path, 'rb') as backup_file:
-            await context.bot.send_document(
+            context.bot.send_document(
                 chat_id=ADMIN_ID,
                 document=backup_file,
                 caption=f"📦 پشتیبان دستی - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             )
         # Clean up
         os.remove(backup_path)
-        await update.message.reply_text("✅ پشتیبان با موفقیت ارسال شد")
+        update.message.reply_text("✅ پشتیبان با موفقیت ارسال شد")
     else:
-        await update.message.reply_text("❌ خطا در ایجاد پشتیبان")
+        update.message.reply_text("❌ خطا در ایجاد پشتیبان")
 
-async def set_backup_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def set_backup_time(update, context):
     """Set backup time command"""
     if update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
-        await update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
+        update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
         return
     
     try:
@@ -207,12 +208,12 @@ async def set_backup_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             args=[context]
         )
         
-        await update.message.reply_text(f"✅ زمان پشتیبان‌گیری به {new_time} تنظیم شد")
+        update.message.reply_text(f"✅ زمان پشتیبان‌گیری به {new_time} تنظیم شد")
     except ValueError:
-        await update.message.reply_text("❌ فرمت زمان نامعتبر است. لطفاً از فرمت HH:MM استفاده کنید")
+        update.message.reply_text("❌ فرمت زمان نامعتبر است. لطفاً از فرمت HH:MM استفاده کنید")
 
 # === Existing Handlers ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update, context):
     user = update.effective_user
     now = datetime.now().isoformat()
 
@@ -222,8 +223,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USERS_DB[str(user.id)]["last_seen"] = now
     save_db()
 
-    if not await is_member(user.id, context):
-        await update.message.reply_text("⚠️ لطفاً ابتدا در کانال‌های زیر عضو شوید:\n" + "\n".join(REQUIRED_CHANNELS))
+    if not asyncio.run(is_member(user.id, context)):
+        update.message.reply_text("⚠️ لطفاً ابتدا در کانال‌های زیر عضو شوید:\n" + "\n".join(REQUIRED_CHANNELS))
         return
 
     payload = update.message.text.replace("/start", "").strip()
@@ -231,18 +232,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = FILE_KEYS.get(payload)
         if file_id and file_id in FILES_DB:
             caption = FILES_DB[file_id].get("caption") or f"📂 {FILES_DB[file_id]['name']}"
-            await context.bot.send_document(chat_id=user.id, document=file_id, caption=caption)
+            context.bot.send_document(chat_id=user.id, document=file_id, caption=caption)
             record_download(user.id, file_id)
         else:
-            await update.message.reply_text("❌ فایل یافت نشد یا لینک نامعتبر است.")
+            update.message.reply_text("❌ فایل یافت نشد یا لینک نامعتبر است.")
         return
 
     if user.id == ADMIN_ID:
-        await update.message.reply_text("سلام ادمین 👑", reply_markup=get_admin_keyboard())
+        update.message.reply_text("سلام ادمین 👑", reply_markup=get_admin_keyboard())
     else:
-        await update.message.reply_text("سلام 👋 برای دریافت فایل روی دکمه یا لینک کلیค کنید.")
+        update.message.reply_text("سلام 👋 برای دریافت فایل روی دکمه یا لینک کلیک کنید.")
 
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_file(update, context):
     if update.effective_user.id != ADMIN_ID: 
         return
 
@@ -259,9 +260,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file:
         file_id = file.file_id
         context.user_data["awaiting_name_for"] = file_id
-        await update.message.reply_text("📝 لطفاً یک نام برای فایل ارسال کنید:")
+        update.message.reply_text("📝 لطفاً یک نام برای فایل ارسال کنید:")
 
-async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_name(update, context):
     if update.effective_user.id != ADMIN_ID: 
         return
         
@@ -280,9 +281,9 @@ async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_caption_for"] = file_id
     context.user_data.pop("awaiting_name_for", None)
     
-    await update.message.reply_text("📝 لطفاً متن یا توضیح فایل را ارسال کنید (یا /skip برای رد کردن):")
+    update.message.reply_text("📝 لطفاً متن یا توضیح فایل را ارسال کنید (یا /skip برای رد کردن):")
 
-async def handle_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_caption(update, context):
     if update.effective_user.id != ADMIN_ID: 
         return
         
@@ -304,9 +305,9 @@ async def handle_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔗 لینک اشتراک‌گذاری", url=deep_link)],
         [InlineKeyboardButton("✏️ ویرایش", callback_data=f"edit_{short_key}")]
     ])
-    await update.message.reply_text("✅ فایل و متن ذخیره شدند!", reply_markup=keyboard)
+    update.message.reply_text("✅ فایل و متن ذخیره شدند!", reply_markup=keyboard)
 
-async def skip_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def skip_caption(update, context):
     if update.effective_user.id != ADMIN_ID: 
         return
         
@@ -327,16 +328,16 @@ async def skip_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔗 لینک اشتراک‌گذاری", url=deep_link)],
         [InlineKeyboardButton("✏️ ویرایش", callback_data=f"edit_{short_key}")]
     ])
-    await update.message.reply_text("✅ فایل ذخیره شد!", reply_markup=keyboard)
+    update.message.reply_text("✅ فایل ذخیره شد!", reply_markup=keyboard)
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_button(update, context):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     user_id = query.from_user.id
     data = query.data
 
-    if not await is_member(user_id, context):
-        await query.message.reply_text("⚠️ لطفاً ابتدا در کانال‌های زیر عضو شوید:\n" + "\n".join(REQUIRED_CHANNELS))
+    if not asyncio.run(is_member(user_id, context)):
+        query.message.reply_text("⚠️ لطفاً ابتدا در کانال‌های زیر عضو شوید:\n" + "\n".join(REQUIRED_CHANNELS))
         return
 
     if data.startswith("get_"):
@@ -344,12 +345,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = FILE_KEYS.get(short_key)
         if file_id and file_id in FILES_DB:
             caption = FILES_DB[file_id].get("caption") or f"📂 {FILES_DB[file_id]['name']}"
-            await context.bot.send_document(chat_id=user_id, document=file_id, caption=caption)
+            context.bot.send_document(chat_id=user_id, document=file_id, caption=caption)
             record_download(user_id, file_id)
 
     elif data.startswith("edit_"):
         if user_id != ADMIN_ID:
-            await query.answer("❌ فقط ادمین می‌تواند ویرایش کند!", show_alert=True)
+            query.answer("❌ فقط ادمین می‌تواند ویرایش کند!", show_alert=True)
             return
             
         short_key = data.replace("edit_", "")
@@ -363,7 +364,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🗑️ حذف فایل", callback_data=f"delete_{short_key}")],
                 [InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_files")]
             ])
-            await query.edit_message_text(
+            query.edit_message_text(
                 f"ویرایش فایل:\n{format_file_info(file_id, FILES_DB[file_id], context.bot.username)}",
                 reply_markup=keyboard
             )
@@ -374,7 +375,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if file_id and file_id in FILES_DB:
             context.user_data["editing_file_name"] = file_id
-            await query.message.reply_text("لطفاً نام جدید را وارد کنید:")
+            query.message.reply_text("لطفاً نام جدید را وارد کنید:")
     
     elif data.startswith("editcaption_"):
         short_key = data.replace("editcaption_", "")
@@ -382,7 +383,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if file_id and file_id in FILES_DB:
             context.user_data["editing_file_caption"] = file_id
-            await query.message.reply_text("لطفاً کپشن جدید را وارد کنید:")
+            query.message.reply_text("لطفاً کپشن جدید را وارد کنید:")
     
     elif data.startswith("delete_"):
         short_key = data.replace("delete_", "")
@@ -394,11 +395,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del FILE_KEYS[short_key]
             save_db()
             
-            await query.edit_message_text("✅ فایل با موفقیت حذف شد!")
+            query.edit_message_text("✅ فایل با موفقیت حذف شد!")
     
     elif data == "stats":
         if user_id != ADMIN_ID:
-            await query.answer("❌ فقط ادمین می‌تواند آمار را ببیند!", show_alert=True)
+            query.answer("❌ فقط ادمین می‌تواند آمار را ببیند!", show_alert=True)
             return
             
         total_users = len(USERS_DB)
@@ -412,15 +413,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📥 دانلودهای کل: {total_downloads}\n"
         )
         
-        await query.edit_message_text(stats_text)
+        query.edit_message_text(stats_text)
     
     elif data == "file_list":
         if user_id != ADMIN_ID:
-            await query.answer("❌ فقط ادمین می‌تواند لیست فایل‌ها را ببیند!", show_alert=True)
+            query.answer("❌ فقط ادمین می‌تواند لیست فایل‌ها را ببیند!", show_alert=True)
             return
             
         if not FILES_DB:
-            await query.edit_message_text("📭 هنوز فایلی آپلود نشده است.")
+            query.edit_message_text("📭 هنوز فایلی آپلود نشده است.")
             return
             
         # ایجاد صفحه‌بندی برای لیست فایل‌ها
@@ -465,8 +466,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard_buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_admin")])
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        await query.edit_message_text(
-            f"📂 لیست فایل‌ها (صفحه {page+1} از {max_page+1}):",
+        query.edit_message_text(
+            f"📂 لیست فایل‌ها (صفحه {page+1} от {max_page+1}):",
             reply_markup=keyboard
         )
     
@@ -474,45 +475,45 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(data.replace("page_", ""))
         context.user_data["file_list_page"] = page
         # Call file_list again to refresh
-        await handle_button(update, context)
+        handle_button(update, context)
     
     elif data == "back_to_admin":
         if user_id == ADMIN_ID:
-            await query.edit_message_text("به پنل ادمین خوش آمدید 👑", reply_markup=get_admin_keyboard())
+            query.edit_message_text("به پنل ادمین خوش آمدید 👑", reply_markup=get_admin_keyboard())
     
     elif data == "back_to_files":
         if user_id == ADMIN_ID:
             # Call file_list again to refresh
-            await handle_button(update, context)
+            handle_button(update, context)
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_text(update, context):
     user_id = update.effective_user.id
     text = update.message.text
     
     if user_id == ADMIN_ID:
         # حالت‌های مختلف برای ادمین
         if "awaiting_name_for" in context.user_data:
-            await handle_name(update, context)
+            handle_name(update, context)
         elif "awaiting_caption_for" in context.user_data:
-            await handle_caption(update, context)
+            handle_caption(update, context)
         elif "editing_file_name" in context.user_data:
             file_id = context.user_data["editing_file_name"]
             if file_id in FILES_DB:
                 FILES_DB[file_id]["name"] = text
                 save_db()
-                await update.message.reply_text("✅ نام فایل با موفقیت به روز شد!")
+                update.message.reply_text("✅ نام فایل با موفقیت به روز شد!")
                 context.user_data.pop("editing_file_name", None)
         elif "editing_file_caption" in context.user_data:
             file_id = context.user_data["editing_file_caption"]
             if file_id in FILES_DB:
                 FILES_DB[file_id]["caption"] = text
                 save_db()
-                await update.message.reply_text("✅ کپشن فایل با موفقیت به روز شد!")
+                update.message.reply_text("✅ کپشن فایل با موفقیت به روز شد!")
                 context.user_data.pop("editing_file_caption", None)
         elif text == "💾 درخواست پشتیبان":
-            await manual_backup(update, context)
+            manual_backup(update, context)
         elif text == "⏰ تنظیم زمان پشتیبان":
-            await update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
+            update.message.reply_text("⏰ لطفاً زمان را به فرمت HH:MM وارد کنید\nمثال: /set_backup_time 02:30")
         elif text == "📊 آمار ربات":
             total_users = len(USERS_DB)
             total_files = len(FILES_DB)
@@ -544,21 +545,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i, (file_id, file_data) in enumerate(popular_files, 1):
                 stats_text += f"{i}. {file_data.get('name', 'نامشخص')} - {file_data.get('downloads', 0)} دانلود\n"
             
-            await update.message.reply_text(stats_text)
+            update.message.reply_text(stats_text)
         
         elif text == "📂 مدیریت فایل‌ها":
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 لیست فایل‌ها", callback_data="file_list")],
                 [InlineKeyboardButton("📊 آمار فایل‌ها", callback_data="stats")]
             ])
-            await update.message.reply_text("مدیریت فایل‌ها:", reply_markup=keyboard)
+            update.message.reply_text("مدیریت فایل‌ها:", reply_markup=keyboard)
         
         elif text == "🔄 به روزرسانی دیتابیس":
             load_db()
-            await update.message.reply_text("✅ دیتابیس با موفقیت به روز شد!")
+            update.message.reply_text("✅ دیتابیس با موفقیت به روز شد!")
         
         elif text == "📢 ارسال پیام به همه":
-            await update.message.reply_text("لطفاً متن پیام را ارسال کنید:")
+            update.message.reply_text("لطفاً متن پیام را ارسال کنید:")
             context.user_data["broadcast"] = True
         
         elif context.user_data.get("broadcast"):
@@ -566,39 +567,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed = 0
             for user_id_str in USERS_DB.keys():
                 try:
-                    await context.bot.send_message(int(user_id_str), text)
+                    context.bot.send_message(int(user_id_str), text)
                     count += 1
                 except:
                     failed += 1
-            await update.message.reply_text(f"📢 پیام برای {count} نفر ارسال شد. ({failed} ناموفق)")
+            update.message.reply_text(f"📢 پیام برای {count} نفر ارسال شد. ({failed} ناموفق)")
             context.user_data["broadcast"] = False
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def admin_command(update, context):
     if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("به پنل ادمین خوش آمدید 👑", reply_markup=get_admin_keyboard())
+        update.message.reply_text("به پنل ادمین خوش آمدید 👑", reply_markup=get_admin_keyboard())
 
 # === Main ===
 def main():
     load_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
     
     # Create backups directory if it doesn't exist
     os.makedirs("backups", exist_ok=True)
     
     # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CommandHandler("skip", skip_caption))
-    app.add_handler(CommandHandler("backup", manual_backup))
-    app.add_handler(CommandHandler("set_backup_time", set_backup_time))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("admin", admin_command))
+    dp.add_handler(CommandHandler("skip", skip_caption))
+    dp.add_handler(CommandHandler("backup", manual_backup))
+    dp.add_handler(CommandHandler("set_backup_time", set_backup_time))
     
-    app.add_handler(MessageHandler(
-        filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO, 
+    dp.add_handler(MessageHandler(
+        Filters.document | Filters.video | Filters.audio | Filters.photo, 
         handle_file
     ))
     
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(CallbackQueryHandler(handle_button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+    dp.add_handler(CallbackQueryHandler(handle_button))
     
     # Start the scheduler for nightly backups
     hour, minute = map(int, BACKUP_TIME.split(':'))
@@ -606,14 +608,15 @@ def main():
         send_backup_to_admin,
         CronTrigger(hour=hour, minute=minute),
         id='nightly_backup',
-        args=[app]
+        args=[dp]
     )
     scheduler.start()
     
     print("✅ Bot is running with automated backup system...")
     print(f"✅ Backups will be sent daily at {BACKUP_TIME}")
     
-    app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
