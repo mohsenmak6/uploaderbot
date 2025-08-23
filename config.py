@@ -4,4 +4,4 @@ ADMINS = [123661460]
 DB_PATH = "media_bot.db"
 BOT_USERNAME = "bdgfilm_bot"
 REQUIRED_CHANNELS = ["@booodgeh"]
-CACHE_TIME = 300  # 5 minutes for inline query cache
+CACHE_TIME = 300
