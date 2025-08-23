@@ -19,3 +19,4 @@ class AdminStates(StatesGroup):
     waiting_for_edit_series = State()
     waiting_for_edit_episode = State()
     waiting_for_delete = State()
+    waiting_for_search = State()
